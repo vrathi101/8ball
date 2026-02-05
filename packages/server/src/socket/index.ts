@@ -1,18 +1,25 @@
 /**
  * 8-Ball Pool - WebSocket Handlers
- * Real-time game communication with auth and state sync
+ * Real-time game communication with physics simulation
  */
 
 import { Server, Socket } from 'socket.io';
 import type { Database } from 'better-sqlite3';
 import { GameService } from '../services/game.js';
+import {
+    simulateShot,
+    applyRules,
+    validateBallPlacement,
+} from '@8ball/shared';
 import type {
     WsClientMessage,
     WsServerStateSync,
+    WsServerShotResult,
     WsServerError,
     WsServerPresence,
     WsServerAuthSuccess,
     Seat,
+    TableState,
 } from '@8ball/shared';
 
 interface AuthenticatedSocket extends Socket {
@@ -94,7 +101,7 @@ export function setupSocketHandlers(io: Server, db: Database): void {
             sendGameState(socket, gameService, socket.gameId, socket.seat, data.lastKnownSeq);
         });
 
-        // Handle shot submission (placeholder - physics engine will be added later)
+        // Handle shot submission with physics simulation
         socket.on('submitShot', (data: WsClientMessage) => {
             if (data.type !== 'submitShot') return;
             if (!socket.gameId || !socket.seat) {
@@ -116,23 +123,65 @@ export function setupSocketHandlers(io: Server, db: Database): void {
                 return;
             }
 
+            // Check game phase
+            if (state.tableState.phase === 'BALL_IN_HAND') {
+                socket.emit('error', { type: 'error', code: 'INVALID_ACTION', message: 'Place cue ball first' });
+                return;
+            }
+
+            if (state.tableState.phase === 'FINISHED') {
+                socket.emit('error', { type: 'error', code: 'INVALID_ACTION', message: 'Game is over' });
+                return;
+            }
+
             // Check version for optimistic concurrency
             if (state.game.version !== gameVersion) {
-                // Send current state so client can retry
                 sendGameState(socket, gameService, socket.gameId, socket.seat);
                 return;
             }
 
-            // TODO: Run physics simulation and rules engine
-            // For now, just acknowledge the shot
-            console.log(`🎱 Shot received from seat ${socket.seat}:`, shotParams);
+            console.log(`🎱 Shot from seat ${socket.seat}: angle=${shotParams.angle.toFixed(2)}, power=${shotParams.power.toFixed(2)}`);
 
-            // Placeholder: In Phase 4, this will call the physics engine
-            socket.emit('error', {
-                type: 'error',
-                code: 'NOT_IMPLEMENTED',
-                message: 'Physics engine not yet implemented'
-            });
+            try {
+                // Run physics simulation
+                const simResult = simulateShot(state.tableState, shotParams);
+
+                // Apply rules to get new game state
+                const newTableState = applyRules(simResult.finalState, simResult.summary);
+
+                // Update game version and persist
+                const newVersion = state.game.version + 1;
+
+                gameService.updateGame(socket.gameId, {
+                    version: newVersion,
+                    current_turn_seat: newTableState.turnSeat,
+                    status: newTableState.phase === 'FINISHED' ? 'FINISHED' : 'IN_PROGRESS',
+                    winner_seat: newTableState.winningSeat ?? undefined,
+                });
+
+                gameService.saveSnapshot(socket.gameId, newVersion, newTableState);
+
+                // Send shot result to all players in the game
+                const shotResult: WsServerShotResult = {
+                    type: 'shotResult',
+                    keyframes: simResult.keyframes,
+                    events: [], // TODO: Generate proper events
+                    newState: newTableState,
+                    version: newVersion,
+                };
+
+                io.to(socket.gameId).emit('shotResult', shotResult);
+
+                console.log(`✅ Shot processed: ${simResult.summary.pocketedBalls.length} pocketed, foul=${simResult.summary.foul || 'none'}`);
+
+            } catch (error) {
+                console.error('Shot simulation error:', error);
+                socket.emit('error', {
+                    type: 'error',
+                    code: 'SIMULATION_ERROR',
+                    message: 'Failed to simulate shot'
+                });
+            }
         });
 
         // Handle ball placement
@@ -167,14 +216,53 @@ export function setupSocketHandlers(io: Server, db: Database): void {
                 return;
             }
 
-            console.log(`🎱 Ball placement from seat ${socket.seat}:`, position);
+            // Validate placement
+            const validation = validateBallPlacement(state.tableState, position);
+            if (!validation.valid) {
+                socket.emit('error', {
+                    type: 'error',
+                    code: 'INVALID_PLACEMENT',
+                    message: validation.reason || 'Invalid placement'
+                });
+                return;
+            }
 
-            // TODO: Validate placement and update state
-            socket.emit('error', {
-                type: 'error',
-                code: 'NOT_IMPLEMENTED',
-                message: 'Ball placement not yet implemented'
-            });
+            console.log(`🎱 Ball placed by seat ${socket.seat}: (${position.x.toFixed(3)}, ${position.y.toFixed(3)})`);
+
+            // Update cue ball position
+            const newTableState: TableState = {
+                ...state.tableState,
+                balls: state.tableState.balls.map(b =>
+                    b.id === 'cue'
+                        ? { ...b, pos: { x: position.x, y: position.y }, inPlay: true }
+                        : b
+                ),
+                ballInHand: false,
+                ballInHandAnywhere: false,
+                phase: 'AIMING',
+            };
+
+            // Update version and persist
+            const newVersion = state.game.version + 1;
+
+            gameService.updateGame(socket.gameId, { version: newVersion });
+            gameService.saveSnapshot(socket.gameId, newVersion, newTableState);
+
+            // Broadcast new state to all players
+            const stateSync: WsServerStateSync = {
+                type: 'stateSync',
+                gameState: {
+                    gameId: socket.gameId,
+                    status: state.game.status,
+                    version: newVersion,
+                    tableState: newTableState,
+                    players: state.players,
+                    yourSeat: socket.seat,
+                },
+                events: [],
+            };
+
+            io.to(socket.gameId).emit('stateSync', stateSync);
         });
 
         // Handle disconnection
