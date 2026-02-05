@@ -11,3 +11,9 @@ export * from './constants.js';
 
 // Utils
 export * from './utils.js';
+
+// Physics
+export * from './physics.js';
+
+// Rules
+export * from './rules.js';

@@ -171,7 +171,7 @@ export function getRemainingBalls(state: TableState, group: BallGroup): BallId[]
         .map(b => b.id);
 }
 
-export function isGroupCleared(state: TableState, group: BallGroup): boolean {
+export function isGroupEmpty(state: TableState, group: BallGroup): boolean {
     return getRemainingBalls(state, group).length === 0;
 }
 
