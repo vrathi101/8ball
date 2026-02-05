@@ -1,14 +1,35 @@
 /**
  * 8-Ball Pool - Game Canvas Component
- * Renders the pool table and balls using HTML Canvas
+ * Renders the pool table, balls, aim line, and ghost ball preview
  */
 
 import { useRef, useEffect, useCallback } from 'react';
-import { TableState, BallState } from '@8ball/shared';
+import { TableState, BallState, Vec2 } from '@8ball/shared';
 import { TABLE, POCKETS, BALL_COLORS, STRIPE_BALL_IDS } from '@8ball/shared';
+
+interface TrajectoryPoint {
+    x: number;
+    y: number;
+}
+
+interface CollisionPreview {
+    type: 'ball' | 'cushion' | 'none';
+    point: Vec2;
+    targetBall?: BallState;
+    reflectAngle?: number;
+}
 
 interface GameCanvasProps {
     tableState: TableState;
+    aimAngle?: number;
+    aimPower?: number;
+    cueBallPos?: Vec2;
+    trajectoryLine?: TrajectoryPoint[];
+    collision?: CollisionPreview | null;
+    isAiming?: boolean;
+    onCanvasClick?: (tableX: number, tableY: number) => void;
+    onCanvasMove?: (tableX: number, tableY: number) => void;
+    onCanvasRelease?: () => void;
 }
 
 // Canvas scaling (pixels per meter)
@@ -21,8 +42,56 @@ function toCanvas(x: number, y: number): [number, number] {
     return [x * SCALE, y * SCALE];
 }
 
-export function GameCanvas({ tableState }: GameCanvasProps) {
+// Convert canvas pixels to table coordinates
+function toTable(canvasX: number, canvasY: number): [number, number] {
+    return [canvasX / SCALE, canvasY / SCALE];
+}
+
+export function GameCanvas({
+    tableState,
+    aimAngle = 0,
+    aimPower = 0.5,
+    cueBallPos: _cueBallPos,
+    trajectoryLine = [],
+    collision = null,
+    isAiming = false,
+    onCanvasClick,
+    onCanvasMove,
+    onCanvasRelease,
+}: GameCanvasProps) {
     const canvasRef = useRef<HTMLCanvasElement>(null);
+
+    // Get canvas mouse position in table coordinates
+    const getTablePos = useCallback((e: React.MouseEvent<HTMLCanvasElement>) => {
+        const canvas = canvasRef.current;
+        if (!canvas) return null;
+        const rect = canvas.getBoundingClientRect();
+        const scaleX = canvas.width / rect.width;
+        const scaleY = canvas.height / rect.height;
+        const canvasX = (e.clientX - rect.left) * scaleX;
+        const canvasY = (e.clientY - rect.top) * scaleY;
+        return toTable(canvasX, canvasY);
+    }, []);
+
+    const handleMouseDown = useCallback((e: React.MouseEvent<HTMLCanvasElement>) => {
+        const pos = getTablePos(e);
+        if (pos && onCanvasClick) {
+            onCanvasClick(pos[0], pos[1]);
+        }
+    }, [getTablePos, onCanvasClick]);
+
+    const handleMouseMove = useCallback((e: React.MouseEvent<HTMLCanvasElement>) => {
+        const pos = getTablePos(e);
+        if (pos && onCanvasMove) {
+            onCanvasMove(pos[0], pos[1]);
+        }
+    }, [getTablePos, onCanvasMove]);
+
+    const handleMouseUp = useCallback(() => {
+        if (onCanvasRelease) {
+            onCanvasRelease();
+        }
+    }, [onCanvasRelease]);
 
     const drawTable = useCallback((ctx: CanvasRenderingContext2D) => {
         // Clear canvas
@@ -73,7 +142,7 @@ export function GameCanvas({ tableState }: GameCanvasProps) {
         ctx.setLineDash([8, 8]);
         ctx.lineWidth = 1;
         ctx.beginPath();
-        const [headX, _] = toCanvas(TABLE.HEAD_STRING_X, 0);
+        const [headX] = toCanvas(TABLE.HEAD_STRING_X, 0);
         ctx.moveTo(headX, railPx);
         ctx.lineTo(headX, CANVAS_HEIGHT - railPx);
         ctx.stroke();
@@ -87,7 +156,7 @@ export function GameCanvas({ tableState }: GameCanvasProps) {
         ctx.fill();
     }, []);
 
-    const drawBall = useCallback((ctx: CanvasRenderingContext2D, ball: BallState) => {
+    const drawBall = useCallback((ctx: CanvasRenderingContext2D, ball: BallState, alpha = 1) => {
         if (!ball.inPlay) return;
 
         const [x, y] = toCanvas(ball.pos.x, ball.pos.y);
@@ -95,10 +164,12 @@ export function GameCanvas({ tableState }: GameCanvasProps) {
         const color = BALL_COLORS[ball.id] || '#FFFFFF';
         const isStripe = STRIPE_BALL_IDS.includes(ball.id as typeof STRIPE_BALL_IDS[number]);
 
+        ctx.globalAlpha = alpha;
+
         // Ball shadow
         ctx.beginPath();
         ctx.arc(x + 3, y + 3, radius, 0, Math.PI * 2);
-        ctx.fillStyle = 'rgba(0, 0, 0, 0.3)';
+        ctx.fillStyle = `rgba(0, 0, 0, ${0.3 * alpha})`;
         ctx.fill();
 
         // Ball base
@@ -139,9 +210,104 @@ export function GameCanvas({ tableState }: GameCanvasProps) {
         // Highlight (3D effect)
         ctx.beginPath();
         ctx.arc(x - radius * 0.25, y - radius * 0.3, radius * 0.25, 0, Math.PI * 2);
-        ctx.fillStyle = 'rgba(255, 255, 255, 0.4)';
+        ctx.fillStyle = `rgba(255, 255, 255, ${0.4 * alpha})`;
         ctx.fill();
+
+        ctx.globalAlpha = 1;
     }, []);
+
+    const drawAimLine = useCallback((ctx: CanvasRenderingContext2D) => {
+        if (!isAiming || trajectoryLine.length < 2) return;
+
+        const cueBall = tableState.balls.find(b => b.id === 'cue' && b.inPlay);
+        if (!cueBall) return;
+
+        const [startX, startY] = toCanvas(cueBall.pos.x, cueBall.pos.y);
+
+        // Draw main trajectory line
+        ctx.strokeStyle = 'rgba(255, 255, 255, 0.6)';
+        ctx.lineWidth = 2;
+        ctx.setLineDash([10, 5]);
+        ctx.beginPath();
+        ctx.moveTo(startX, startY);
+
+        for (const point of trajectoryLine) {
+            const [px, py] = toCanvas(point.x, point.y);
+            ctx.lineTo(px, py);
+        }
+        ctx.stroke();
+        ctx.setLineDash([]);
+
+        // Draw ghost ball at collision point
+        if (collision && collision.type === 'ball') {
+            const [ghostX, ghostY] = toCanvas(collision.point.x, collision.point.y);
+            const radius = TABLE.BALL_RADIUS * SCALE;
+
+            // Ghost cue ball
+            ctx.beginPath();
+            ctx.arc(ghostX, ghostY, radius, 0, Math.PI * 2);
+            ctx.strokeStyle = 'rgba(255, 255, 255, 0.5)';
+            ctx.lineWidth = 2;
+            ctx.stroke();
+            ctx.fillStyle = 'rgba(255, 255, 255, 0.2)';
+            ctx.fill();
+
+            // Draw predicted object ball path
+            if (collision.reflectAngle !== undefined && collision.targetBall) {
+                const objectBallPathLength = 0.3; // 30cm
+                const [objX, objY] = toCanvas(collision.targetBall.pos.x, collision.targetBall.pos.y);
+                const endX = objX + Math.cos(collision.reflectAngle) * objectBallPathLength * SCALE;
+                const endY = objY + Math.sin(collision.reflectAngle) * objectBallPathLength * SCALE;
+
+                ctx.strokeStyle = 'rgba(255, 200, 50, 0.6)';
+                ctx.lineWidth = 2;
+                ctx.setLineDash([6, 4]);
+                ctx.beginPath();
+                ctx.moveTo(objX, objY);
+                ctx.lineTo(endX, endY);
+                ctx.stroke();
+                ctx.setLineDash([]);
+            }
+        }
+
+        // Draw cue stick
+        const cueLength = 0.5 * SCALE; // Visual cue length
+        const cueStart = aimPower * 0.15 * SCALE + 20; // Pull back based on power
+        const cueAngle = aimAngle + Math.PI; // Point opposite to aim direction
+
+        const cueStartX = startX + Math.cos(cueAngle) * cueStart;
+        const cueStartY = startY + Math.sin(cueAngle) * cueStart;
+        const cueEndX = cueStartX + Math.cos(cueAngle) * cueLength;
+        const cueEndY = cueStartY + Math.sin(cueAngle) * cueLength;
+
+        // Cue shadow
+        ctx.strokeStyle = 'rgba(0, 0, 0, 0.3)';
+        ctx.lineWidth = 10;
+        ctx.lineCap = 'round';
+        ctx.beginPath();
+        ctx.moveTo(cueStartX + 2, cueStartY + 2);
+        ctx.lineTo(cueEndX + 2, cueEndY + 2);
+        ctx.stroke();
+
+        // Cue stick
+        const gradient = ctx.createLinearGradient(cueStartX, cueStartY, cueEndX, cueEndY);
+        gradient.addColorStop(0, '#f5deb3');
+        gradient.addColorStop(0.7, '#8b4513');
+        gradient.addColorStop(1, '#2d1810');
+
+        ctx.strokeStyle = gradient;
+        ctx.lineWidth = 8;
+        ctx.beginPath();
+        ctx.moveTo(cueStartX, cueStartY);
+        ctx.lineTo(cueEndX, cueEndY);
+        ctx.stroke();
+
+        // Cue tip
+        ctx.fillStyle = '#1e90ff';
+        ctx.beginPath();
+        ctx.arc(cueStartX, cueStartY, 5, 0, Math.PI * 2);
+        ctx.fill();
+    }, [tableState, isAiming, trajectoryLine, collision, aimAngle, aimPower]);
 
     const draw = useCallback(() => {
         const canvas = canvasRef.current;
@@ -157,7 +323,10 @@ export function GameCanvas({ tableState }: GameCanvasProps) {
         for (const ball of tableState.balls) {
             drawBall(ctx, ball);
         }
-    }, [tableState, drawTable, drawBall]);
+
+        // Draw aim line and cue if aiming
+        drawAimLine(ctx);
+    }, [tableState, drawTable, drawBall, drawAimLine]);
 
     useEffect(() => {
         draw();
@@ -170,6 +339,10 @@ export function GameCanvas({ tableState }: GameCanvasProps) {
                 className="game-canvas"
                 width={CANVAS_WIDTH}
                 height={CANVAS_HEIGHT}
+                onMouseDown={handleMouseDown}
+                onMouseMove={handleMouseMove}
+                onMouseUp={handleMouseUp}
+                onMouseLeave={handleMouseUp}
             />
         </div>
     );

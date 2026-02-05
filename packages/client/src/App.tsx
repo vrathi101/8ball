@@ -1,37 +1,19 @@
 /**
- * 8-Ball Pool - Main App Component
+ * 8-Ball Pool - Client App
  */
 
-import { useState, useEffect } from 'react';
-import { GameCanvas } from './components/GameCanvas';
-import { createInitialTableState, TableState } from '@8ball/shared';
+import { GamePage } from './components/GamePage';
+import './index.css';
 
 function App() {
-    const [tableState, setTableState] = useState<TableState | null>(null);
-
-    useEffect(() => {
-        // Initialize with default table state for development
-        setTableState(createInitialTableState());
-    }, []);
-
+    // For now, render the game page in development mode
+    // Later this will be connected to WebSocket for multiplayer
     return (
         <div className="app">
-            <header className="header">
-                <h1>🎱 8-Ball Pool</h1>
-                <p className="subtitle">Private 2-Player Games</p>
-            </header>
-
-            <main className="main">
-                {tableState ? (
-                    <GameCanvas tableState={tableState} />
-                ) : (
-                    <div className="loading">Loading...</div>
-                )}
-            </main>
-
-            <footer className="footer">
-                <p>MVP Development</p>
-            </footer>
+            <GamePage
+                isMyTurn={true}
+                playerSeat={1}
+            />
         </div>
     );
 }
