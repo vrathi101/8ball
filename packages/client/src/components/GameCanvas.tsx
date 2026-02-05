@@ -217,7 +217,7 @@ export function GameCanvas({
     }, []);
 
     const drawAimLine = useCallback((ctx: CanvasRenderingContext2D) => {
-        if (!isAiming || trajectoryLine.length < 2) return;
+        if (!isAiming || trajectoryLine.length < 1) return;
 
         const cueBall = tableState.balls.find(b => b.id === 'cue' && b.inPlay);
         if (!cueBall) return;

@@ -4,7 +4,7 @@
  */
 
 import { useState, useCallback, useEffect } from 'react';
-import { TableState, ShotParams, createInitialTableState } from '@8ball/shared';
+import { TableState, ShotParams, createInitialTableState, simulateShot, applyRules } from '@8ball/shared';
 import { GameCanvas } from './GameCanvas';
 import { GameControls } from './GameControls';
 import { useAimSystem } from '../hooks/useAimSystem';
@@ -26,7 +26,7 @@ export function GamePage({
     onPlaceBall,
 }: GamePageProps) {
     // Use provided state or create initial state for development
-    const [localTableState, _setLocalTableState] = useState<TableState>(
+    const [localTableState, setLocalTableState] = useState<TableState>(
         () => propTableState || createInitialTableState()
     );
 
@@ -67,8 +67,20 @@ export function GamePage({
             setIsSimulating(true);
             onSubmitShot(params);
             // Simulation will be turned off when new state arrives
+        } else {
+            // Local dev mode - simulate locally
+            setIsSimulating(true);
+            try {
+                const result = simulateShot(tableState, params);
+                const newState = applyRules(result.finalState, result.summary);
+                setLocalTableState(newState);
+                console.log('Shot result:', result.summary);
+            } catch (err) {
+                console.error('Shot error:', err);
+            }
+            setIsSimulating(false);
         }
-    }, [canShoot, getShotParams, onSubmitShot]);
+    }, [canShoot, getShotParams, onSubmitShot, tableState]);
 
     // Handle canvas click for aiming or ball placement
     const handleCanvasClick = useCallback((tableX: number, tableY: number) => {
@@ -136,7 +148,7 @@ export function GamePage({
                     cueBallPos={cueBall?.pos}
                     trajectoryLine={trajectoryPreview.line}
                     collision={trajectoryPreview.collision}
-                    isAiming={isMyTurn && aimState.isDragging}
+                    isAiming={isMyTurn && !isPlacingBall && tableState.phase !== 'FINISHED'}
                     onCanvasClick={handleCanvasClick}
                     onCanvasMove={handleAimMove}
                     onCanvasRelease={handleAimEnd}
