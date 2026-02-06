@@ -3,8 +3,9 @@
  * Main game screen integrating canvas, controls, and game logic
  */
 
-import { useState, useCallback, useEffect, useMemo } from 'react';
-import { TableState, ShotParams, createInitialTableState, simulateShot, applyRules } from '@8ball/shared';
+import { useState, useCallback, useEffect, useMemo, useRef } from 'react';
+import { TableState, ShotParams, BallState, BallId, createInitialTableState, simulateShot, applyRules, isGroupCleared } from '@8ball/shared';
+import { BALL_COLORS, STRIPE_BALL_IDS } from '@8ball/shared';
 import { GameCanvas } from './GameCanvas';
 import { GameControls } from './GameControls';
 import { useAimSystem } from '../hooks/useAimSystem';
@@ -34,6 +35,7 @@ export function GamePage({
     playerSeat = 1,
     onSubmitShot,
     onPlaceBall,
+    players,
     isAnimating: externalAnimating,
 }: GamePageProps) {
     // Use provided state or create initial state for development
@@ -44,6 +46,28 @@ export function GamePage({
     const isMultiplayer = !!propTableState;
     const tableState = propTableState || localTableState;
     const [isSimulating, setIsSimulating] = useState(false);
+
+    // Track previous balls for pocket animation
+    const prevBallsRef = useRef<BallState[]>(tableState.balls);
+    const [previousBalls, setPreviousBalls] = useState<BallState[]>(tableState.balls);
+
+    useEffect(() => {
+        setPreviousBalls(prevBallsRef.current);
+        prevBallsRef.current = tableState.balls;
+    }, [tableState.balls]);
+
+    // Foul banner state
+    const [foulBanner, setFoulBanner] = useState<string | null>(null);
+    const foulTimerRef = useRef<ReturnType<typeof setTimeout>>();
+
+    // Turn banner state
+    const [turnBanner, setTurnBanner] = useState<{ text: string; isYours: boolean } | null>(null);
+    const turnTimerRef = useRef<ReturnType<typeof setTimeout>>();
+    const prevTurnSeatRef = useRef(tableState.turnSeat);
+
+    // Call pocket state for 8-ball
+    const [calledPocket, setCalledPocket] = useState<number | null>(null);
+    const [showCallPocket, setShowCallPocket] = useState(false);
 
     // Animation playback hook (only used in dev/local mode)
     const { isAnimating: localAnimating, animatedBalls: localAnimatedBalls, playAnimation } = useAnimationPlayback();
@@ -75,8 +99,23 @@ export function GamePage({
         getShotParams,
     } = useAimSystem(displayTableState, isMyTurn && !isAnimating);
 
+    // Check if player should call pocket (group cleared, shooting 8-ball)
+    const shouldCallPocket = useMemo(() => {
+        if (tableState.openTable || tableState.phase === 'FINISHED') return false;
+        return isGroupCleared(tableState, playerSeat) && isMyTurn;
+    }, [tableState, playerSeat, isMyTurn]);
+
+    // Show call pocket overlay when needed
+    useEffect(() => {
+        if (shouldCallPocket && !isAnimating && !isSimulating) {
+            setShowCallPocket(true);
+        } else {
+            setShowCallPocket(false);
+        }
+    }, [shouldCallPocket, isAnimating, isSimulating]);
+
     // Determine if placing ball (also during break for cue placement)
-    const isPlacingBall = (tableState.ballInHand || (tableState.phase === 'AWAITING_BREAK' && tableState.ballInHand)) && tableState.turnSeat === playerSeat;
+    const isPlacingBall = tableState.ballInHand && tableState.turnSeat === playerSeat;
 
     // Determine if player can shoot
     const canShoot = isMyTurn &&
@@ -85,28 +124,51 @@ export function GamePage({
         tableState.phase !== 'FINISHED' &&
         !isPlacingBall &&
         !isSimulating &&
-        !isAnimating;
+        !isAnimating &&
+        (!shouldCallPocket || calledPocket !== null);
+
+    // Show foul banner when lastShotSummary changes with a foul
+    useEffect(() => {
+        if (tableState.lastShotSummary?.foul && !isAnimating) {
+            setFoulBanner(`Foul: ${tableState.lastShotSummary.foulReason}`);
+            if (foulTimerRef.current) clearTimeout(foulTimerRef.current);
+            foulTimerRef.current = setTimeout(() => setFoulBanner(null), 2000);
+        }
+    }, [tableState.lastShotSummary, isAnimating]);
+
+    // Show turn banner on turn change
+    useEffect(() => {
+        if (tableState.turnSeat !== prevTurnSeatRef.current && tableState.phase !== 'FINISHED') {
+            prevTurnSeatRef.current = tableState.turnSeat;
+            const yours = tableState.turnSeat === playerSeat;
+            setTurnBanner({ text: yours ? 'Your Turn!' : "Opponent's Turn", isYours: yours });
+            if (turnTimerRef.current) clearTimeout(turnTimerRef.current);
+            turnTimerRef.current = setTimeout(() => setTurnBanner(null), 1500);
+
+            // Reset called pocket on turn change
+            setCalledPocket(null);
+        }
+    }, [tableState.turnSeat, tableState.phase, playerSeat]);
 
     // Handle shot submission
     const handleShoot = useCallback(() => {
         if (!canShoot) return;
 
-        const params = getShotParams();
-        console.log('Shooting with params:', params);
+        const params: ShotParams = {
+            ...getShotParams(),
+            calledPocket: calledPocket ?? undefined,
+        };
 
         if (onSubmitShot) {
             setIsSimulating(true);
             onSubmitShot(params);
-            // Simulation will be turned off when new state arrives
         } else {
             // Local dev mode - simulate locally with animation
             setIsSimulating(true);
             try {
                 const result = simulateShot(tableState, params);
                 const newState = applyRules(result.finalState, result.summary);
-                console.log('Shot result:', result.summary, 'Keyframes:', result.keyframes.length);
 
-                // Play animation, then update state when complete
                 playAnimation(result.keyframes, newState, (finalState) => {
                     setLocalTableState(finalState);
                     setIsSimulating(false);
@@ -116,13 +178,12 @@ export function GamePage({
                 setIsSimulating(false);
             }
         }
-    }, [canShoot, getShotParams, onSubmitShot, tableState, playAnimation]);
+    }, [canShoot, getShotParams, calledPocket, onSubmitShot, tableState, playAnimation]);
 
     // Handle ball placement for local dev mode
     const handleLocalPlaceBall = useCallback((tableX: number, tableY: number) => {
         if (!isPlacingBall) return;
 
-        // Update cue ball position
         setLocalTableState(prev => ({
             ...prev,
             balls: prev.balls.map(b =>
@@ -136,13 +197,12 @@ export function GamePage({
 
     // Handle canvas click for aiming or ball placement
     const handleCanvasClick = useCallback((tableX: number, tableY: number) => {
-        if (isAnimating) return; // Ignore clicks during animation
+        if (isAnimating) return;
 
         if (isPlacingBall) {
             if (onPlaceBall) {
                 onPlaceBall({ x: tableX, y: tableY });
             } else {
-                // Local dev mode
                 handleLocalPlaceBall(tableX, tableY);
             }
         } else {
@@ -157,32 +217,64 @@ export function GamePage({
         }
     }, [propTableState]);
 
-    // Get opponent group info for display
+    // Get group info for display
     const getGroupInfo = () => {
-        if (tableState.openTable) {
-            return 'Open Table - Any group';
-        }
+        if (tableState.openTable) return 'Open Table - Any group';
         const myGroup = playerSeat === 1
             ? tableState.groups.seat1Group
             : tableState.groups.seat2Group;
         return myGroup ? `Playing ${myGroup.toLowerCase()}` : 'No group';
     };
 
+    // Get pocketed balls per group for ball tray
+    const getPocketedByGroup = (group: 'solids' | 'stripes'): BallId[] => {
+        return tableState.pocketed.filter(id => {
+            if (id === 'cue' || id === '8') return false;
+            const num = parseInt(id, 10);
+            return group === 'solids' ? num <= 7 : num >= 9;
+        });
+    };
+
+    const myGroup = playerSeat === 1 ? tableState.groups.seat1Group : tableState.groups.seat2Group;
+    const opponentGroup = playerSeat === 1 ? tableState.groups.seat2Group : tableState.groups.seat1Group;
+
     return (
         <div className="game-page">
+            {/* Foul banner */}
+            {foulBanner && <div className="foul-banner">{foulBanner}</div>}
+
+            {/* Turn banner */}
+            {turnBanner && (
+                <div className={`turn-banner ${turnBanner.isYours ? 'your-turn' : 'their-turn'}`}>
+                    {turnBanner.text}
+                </div>
+            )}
+
             {/* Game header */}
             <div className="game-header">
-                <div className="turn-indicator">
-                    {tableState.phase === 'FINISHED' ? (
-                        <span className="winner-text">
-                            🏆 {tableState.winningSeat === playerSeat ? 'You Win!' : 'Opponent Wins'}
-                        </span>
-                    ) : isAnimating ? (
-                        <span className="animating">🎱 Balls in motion...</span>
-                    ) : (
-                        <span className={isMyTurn ? 'your-turn' : 'their-turn'}>
-                            {isMyTurn ? '🎯 Your Turn' : '⏳ Opponent\'s Turn'}
-                        </span>
+                <div className="header-left">
+                    <div className="turn-indicator">
+                        {tableState.phase === 'FINISHED' ? (
+                            <span className="winner-text">
+                                {tableState.winningSeat === playerSeat ? 'You Win!' : 'Opponent Wins'}
+                            </span>
+                        ) : isAnimating ? (
+                            <span className="animating">Balls in motion...</span>
+                        ) : (
+                            <span className={isMyTurn ? 'your-turn' : 'their-turn'}>
+                                {isMyTurn ? 'Your Turn' : "Opponent's Turn"}
+                            </span>
+                        )}
+                    </div>
+                    {players && (
+                        <div className="player-names">
+                            {players.map(p => (
+                                <span key={p.seat} className={`player-name ${p.seat === playerSeat ? 'me' : 'opponent'}`}>
+                                    <span className={`status-dot ${p.online ? 'online' : 'offline'}`} />
+                                    {p.displayName}
+                                </span>
+                            ))}
+                        </div>
                     )}
                 </div>
                 <div className="game-info">
@@ -192,11 +284,42 @@ export function GamePage({
                     )}
                     {isPlacingBall && !isAnimating && (
                         <span className="phase-indicator ball-in-hand">
-                            🖐️ {tableState.ballInHandAnywhere ? 'Place ball anywhere' : 'Place behind head string'}
+                            {tableState.ballInHandAnywhere ? 'Place ball anywhere' : 'Place behind head string'}
                         </span>
+                    )}
+                    {showCallPocket && calledPocket === null && (
+                        <span className="phase-indicator call-pocket">Click a pocket for the 8-ball</span>
                     )}
                 </div>
             </div>
+
+            {/* Ball trays */}
+            {!tableState.openTable && (
+                <div className="ball-trays">
+                    <div className="ball-tray-group">
+                        <span className="tray-label">{myGroup === 'SOLIDS' ? 'Solids' : 'Stripes'} (You)</span>
+                        <div className="ball-tray">
+                            {getPocketedByGroup(myGroup === 'SOLIDS' ? 'solids' : 'stripes').map(id => (
+                                <div key={id} className="ball-tray-ball"
+                                    style={{ background: BALL_COLORS[id] || '#fff' }}>
+                                    {STRIPE_BALL_IDS.includes(id as typeof STRIPE_BALL_IDS[number]) ? '' : id}
+                                </div>
+                            ))}
+                        </div>
+                    </div>
+                    <div className="ball-tray-group">
+                        <span className="tray-label">{opponentGroup === 'SOLIDS' ? 'Solids' : 'Stripes'} (Opp)</span>
+                        <div className="ball-tray">
+                            {getPocketedByGroup(opponentGroup === 'SOLIDS' ? 'solids' : 'stripes').map(id => (
+                                <div key={id} className="ball-tray-ball"
+                                    style={{ background: BALL_COLORS[id] || '#fff' }}>
+                                    {STRIPE_BALL_IDS.includes(id as typeof STRIPE_BALL_IDS[number]) ? '' : id}
+                                </div>
+                            ))}
+                        </div>
+                    </div>
+                </div>
+            )}
 
             {/* Game canvas */}
             <div className="canvas-wrapper">
@@ -207,10 +330,14 @@ export function GamePage({
                     cueBallPos={cueBall?.pos}
                     trajectoryLine={trajectoryPreview.line}
                     collision={trajectoryPreview.collision}
-                    isAiming={isMyTurn && !isPlacingBall && !isAnimating && tableState.phase !== 'FINISHED'}
+                    isAiming={isMyTurn && !isPlacingBall && !isAnimating && tableState.phase !== 'FINISHED' && !showCallPocket}
                     onCanvasClick={handleCanvasClick}
                     onCanvasMove={handleAimMove}
                     onCanvasRelease={handleAimEnd}
+                    callingPocket={showCallPocket}
+                    onPocketClick={(idx) => setCalledPocket(idx)}
+                    selectedPocket={calledPocket}
+                    previousBalls={previousBalls}
                 />
             </div>
 
@@ -231,14 +358,9 @@ export function GamePage({
             {/* Last shot summary */}
             {tableState.lastShotSummary && !isAnimating && (
                 <div className="shot-summary">
-                    {tableState.lastShotSummary.foul && (
-                        <div className="foul-indicator">
-                            ❌ Foul: {tableState.lastShotSummary.foulReason}
-                        </div>
-                    )}
                     {tableState.lastShotSummary.pocketedBalls.length > 0 && (
                         <div className="pocketed-indicator">
-                            🎱 Pocketed: {tableState.lastShotSummary.pocketedBalls.join(', ')}
+                            Pocketed: {tableState.lastShotSummary.pocketedBalls.join(', ')}
                         </div>
                     )}
                 </div>

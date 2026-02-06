@@ -146,6 +146,20 @@ export function setupSocketHandlers(io: Server, db: Database): void {
                 // Run physics simulation
                 const simResult = simulateShot(state.tableState, shotParams);
 
+                // Check called pocket for 8-ball
+                if (simResult.summary.pocketedBalls.includes('8') &&
+                    shotParams.calledPocket !== undefined &&
+                    simResult.summary.pocketIndices) {
+                    const actualPocket = simResult.summary.pocketIndices['8'];
+                    if (actualPocket !== undefined && actualPocket !== shotParams.calledPocket) {
+                        // 8-ball in wrong pocket = loss
+                        simResult.summary.gameOver = true;
+                        simResult.summary.winner = (socket.seat === 1 ? 2 : 1) as 1 | 2;
+                        simResult.summary.foul = 'EARLY_8_POCKET';
+                        simResult.summary.foulReason = '8-ball pocketed in wrong pocket';
+                    }
+                }
+
                 // Apply rules to get new game state
                 const newTableState = applyRules(simResult.finalState, simResult.summary);
 

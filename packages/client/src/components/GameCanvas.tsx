@@ -1,6 +1,6 @@
 /**
  * 8-Ball Pool - Game Canvas Component
- * Renders the pool table, balls, aim line, and ghost ball preview
+ * Renders the pool table, balls, aim line, ghost ball preview, and pocket highlights
  */
 
 import { useRef, useEffect, useCallback } from 'react';
@@ -30,6 +30,10 @@ interface GameCanvasProps {
     onCanvasClick?: (tableX: number, tableY: number) => void;
     onCanvasMove?: (tableX: number, tableY: number) => void;
     onCanvasRelease?: () => void;
+    callingPocket?: boolean;
+    onPocketClick?: (pocketIndex: number) => void;
+    selectedPocket?: number | null;
+    previousBalls?: BallState[];
 }
 
 // Canvas scaling (pixels per meter)
@@ -58,39 +62,111 @@ export function GameCanvas({
     onCanvasClick,
     onCanvasMove,
     onCanvasRelease,
+    callingPocket = false,
+    onPocketClick,
+    selectedPocket,
+    previousBalls,
 }: GameCanvasProps) {
     const canvasRef = useRef<HTMLCanvasElement>(null);
+    const pocketAnimRef = useRef<Map<string, { startTime: number; pocketIdx: number }>>(new Map());
 
-    // Get canvas mouse position in table coordinates
-    const getTablePos = useCallback((e: React.MouseEvent<HTMLCanvasElement>) => {
+    // Track balls transitioning inPlay: true -> false for pocket animation
+    useEffect(() => {
+        if (!previousBalls) return;
+        for (const prevBall of previousBalls) {
+            const curBall = tableState.balls.find(b => b.id === prevBall.id);
+            if (prevBall.inPlay && curBall && !curBall.inPlay) {
+                // Ball was just pocketed - find nearest pocket
+                let nearestIdx = 0;
+                let nearestDist = Infinity;
+                for (let i = 0; i < POCKETS.length; i++) {
+                    const dx = prevBall.pos.x - POCKETS[i].x;
+                    const dy = prevBall.pos.y - POCKETS[i].y;
+                    const d = Math.sqrt(dx * dx + dy * dy);
+                    if (d < nearestDist) { nearestDist = d; nearestIdx = i; }
+                }
+                pocketAnimRef.current.set(prevBall.id, { startTime: performance.now(), pocketIdx: nearestIdx });
+            }
+        }
+    }, [tableState.balls, previousBalls]);
+
+    // Get canvas position from mouse or touch event
+    const getTablePosFromXY = useCallback((clientX: number, clientY: number) => {
         const canvas = canvasRef.current;
         if (!canvas) return null;
         const rect = canvas.getBoundingClientRect();
         const scaleX = canvas.width / rect.width;
         const scaleY = canvas.height / rect.height;
-        const canvasX = (e.clientX - rect.left) * scaleX;
-        const canvasY = (e.clientY - rect.top) * scaleY;
+        const canvasX = (clientX - rect.left) * scaleX;
+        const canvasY = (clientY - rect.top) * scaleY;
         return toTable(canvasX, canvasY);
     }, []);
 
+    const getTablePos = useCallback((e: React.MouseEvent<HTMLCanvasElement>) => {
+        return getTablePosFromXY(e.clientX, e.clientY);
+    }, [getTablePosFromXY]);
+
     const handleMouseDown = useCallback((e: React.MouseEvent<HTMLCanvasElement>) => {
         const pos = getTablePos(e);
-        if (pos && onCanvasClick) {
-            onCanvasClick(pos[0], pos[1]);
+        if (!pos) return;
+
+        // Check if clicking a pocket during call-pocket mode
+        if (callingPocket && onPocketClick) {
+            for (let i = 0; i < POCKETS.length; i++) {
+                const [px, py] = [POCKETS[i].x, POCKETS[i].y];
+                const dx = pos[0] - px;
+                const dy = pos[1] - py;
+                if (Math.sqrt(dx * dx + dy * dy) < TABLE.POCKET_RADIUS * 1.5) {
+                    onPocketClick(i);
+                    return;
+                }
+            }
         }
-    }, [getTablePos, onCanvasClick]);
+
+        if (onCanvasClick) onCanvasClick(pos[0], pos[1]);
+    }, [getTablePos, onCanvasClick, callingPocket, onPocketClick]);
 
     const handleMouseMove = useCallback((e: React.MouseEvent<HTMLCanvasElement>) => {
         const pos = getTablePos(e);
-        if (pos && onCanvasMove) {
-            onCanvasMove(pos[0], pos[1]);
-        }
+        if (pos && onCanvasMove) onCanvasMove(pos[0], pos[1]);
     }, [getTablePos, onCanvasMove]);
 
     const handleMouseUp = useCallback(() => {
-        if (onCanvasRelease) {
-            onCanvasRelease();
+        if (onCanvasRelease) onCanvasRelease();
+    }, [onCanvasRelease]);
+
+    // Touch handlers
+    const handleTouchStart = useCallback((e: React.TouchEvent<HTMLCanvasElement>) => {
+        e.preventDefault();
+        const touch = e.touches[0];
+        const pos = getTablePosFromXY(touch.clientX, touch.clientY);
+        if (!pos) return;
+
+        if (callingPocket && onPocketClick) {
+            for (let i = 0; i < POCKETS.length; i++) {
+                const [px, py] = [POCKETS[i].x, POCKETS[i].y];
+                const dx = pos[0] - px;
+                const dy = pos[1] - py;
+                if (Math.sqrt(dx * dx + dy * dy) < TABLE.POCKET_RADIUS * 1.5) {
+                    onPocketClick(i);
+                    return;
+                }
+            }
         }
+
+        if (onCanvasClick) onCanvasClick(pos[0], pos[1]);
+    }, [getTablePosFromXY, onCanvasClick, callingPocket, onPocketClick]);
+
+    const handleTouchMove = useCallback((e: React.TouchEvent<HTMLCanvasElement>) => {
+        e.preventDefault();
+        const touch = e.touches[0];
+        const pos = getTablePosFromXY(touch.clientX, touch.clientY);
+        if (pos && onCanvasMove) onCanvasMove(pos[0], pos[1]);
+    }, [getTablePosFromXY, onCanvasMove]);
+
+    const handleTouchEnd = useCallback((e: React.TouchEvent<HTMLCanvasElement>) => {
+        e.preventDefault();
+        if (onCanvasRelease) onCanvasRelease();
     }, [onCanvasRelease]);
 
     const drawTable = useCallback((ctx: CanvasRenderingContext2D) => {
@@ -119,8 +195,8 @@ export function GameCanvas({
         }
 
         // Draw pockets
-        ctx.fillStyle = '#000000';
-        for (const pocket of POCKETS) {
+        for (let i = 0; i < POCKETS.length; i++) {
+            const pocket = POCKETS[i];
             const [px, py] = toCanvas(pocket.x, pocket.y);
             const pocketRadius = TABLE.POCKET_RADIUS * SCALE;
 
@@ -135,6 +211,15 @@ export function GameCanvas({
             ctx.arc(px, py, pocketRadius, 0, Math.PI * 2);
             ctx.fillStyle = '#000000';
             ctx.fill();
+
+            // Highlight pocket during call-pocket mode
+            if (callingPocket) {
+                ctx.beginPath();
+                ctx.arc(px, py, pocketRadius + 3, 0, Math.PI * 2);
+                ctx.strokeStyle = selectedPocket === i ? '#fbbf24' : 'rgba(255, 255, 255, 0.4)';
+                ctx.lineWidth = selectedPocket === i ? 4 : 2;
+                ctx.stroke();
+            }
         }
 
         // Draw head string (dashed line for break position)
@@ -154,13 +239,13 @@ export function GameCanvas({
         ctx.beginPath();
         ctx.arc(footX, footY, 4, 0, Math.PI * 2);
         ctx.fill();
-    }, []);
+    }, [callingPocket, selectedPocket]);
 
-    const drawBall = useCallback((ctx: CanvasRenderingContext2D, ball: BallState, alpha = 1) => {
-        if (!ball.inPlay) return;
+    const drawBall = useCallback((ctx: CanvasRenderingContext2D, ball: BallState, alpha = 1, scale = 1) => {
+        if (!ball.inPlay && scale === 1) return;
 
         const [x, y] = toCanvas(ball.pos.x, ball.pos.y);
-        const radius = TABLE.BALL_RADIUS * SCALE;
+        const radius = TABLE.BALL_RADIUS * SCALE * scale;
         const color = BALL_COLORS[ball.id] || '#FFFFFF';
         const isStripe = STRIPE_BALL_IDS.includes(ball.id as typeof STRIPE_BALL_IDS[number]);
 
@@ -168,7 +253,7 @@ export function GameCanvas({
 
         // Ball shadow
         ctx.beginPath();
-        ctx.arc(x + 3, y + 3, radius, 0, Math.PI * 2);
+        ctx.arc(x + 3 * scale, y + 3 * scale, radius, 0, Math.PI * 2);
         ctx.fillStyle = `rgba(0, 0, 0, ${0.3 * alpha})`;
         ctx.fill();
 
@@ -192,7 +277,7 @@ export function GameCanvas({
         }
 
         // Ball number (centered)
-        if (ball.id !== 'cue') {
+        if (ball.id !== 'cue' && scale > 0.3) {
             // White circle for number
             ctx.beginPath();
             ctx.arc(x, y, radius * 0.45, 0, Math.PI * 2);
@@ -215,6 +300,45 @@ export function GameCanvas({
 
         ctx.globalAlpha = 1;
     }, []);
+
+    const drawPocketAnimations = useCallback((ctx: CanvasRenderingContext2D) => {
+        const now = performance.now();
+        const ANIM_DURATION = 300;
+        const toRemove: string[] = [];
+
+        for (const [ballId, anim] of pocketAnimRef.current) {
+            const elapsed = now - anim.startTime;
+            if (elapsed > ANIM_DURATION) {
+                toRemove.push(ballId);
+                continue;
+            }
+
+            const t = elapsed / ANIM_DURATION;
+            const alpha = 1 - t;
+            const scale = 1 - t * 0.8;
+
+            // Find ball in current state (it's not inPlay but we still have its last known position)
+            const ball = tableState.balls.find(b => b.id === ballId);
+            if (!ball) continue;
+
+            // Lerp ball position toward pocket center
+            const pocket = POCKETS[anim.pocketIdx];
+            const animBall: BallState = {
+                ...ball,
+                pos: {
+                    x: ball.pos.x + (pocket.x - ball.pos.x) * t,
+                    y: ball.pos.y + (pocket.y - ball.pos.y) * t,
+                },
+                inPlay: true, // Force draw
+            };
+
+            drawBall(ctx, animBall, alpha, scale);
+        }
+
+        for (const id of toRemove) {
+            pocketAnimRef.current.delete(id);
+        }
+    }, [tableState.balls, drawBall]);
 
     const drawAimLine = useCallback((ctx: CanvasRenderingContext2D) => {
         if (!isAiming || trajectoryLine.length < 1) return;
@@ -324,12 +448,31 @@ export function GameCanvas({
             drawBall(ctx, ball);
         }
 
+        // Draw pocket animations (shrinking/fading)
+        drawPocketAnimations(ctx);
+
         // Draw aim line and cue if aiming
         drawAimLine(ctx);
-    }, [tableState, drawTable, drawBall, drawAimLine]);
+    }, [tableState, drawTable, drawBall, drawPocketAnimations, drawAimLine]);
 
     useEffect(() => {
-        draw();
+        let animFrame: number;
+        const hasActiveAnims = pocketAnimRef.current.size > 0;
+
+        if (hasActiveAnims) {
+            // Keep re-drawing while pocket animations are active
+            const loop = () => {
+                draw();
+                if (pocketAnimRef.current.size > 0) {
+                    animFrame = requestAnimationFrame(loop);
+                }
+            };
+            animFrame = requestAnimationFrame(loop);
+            return () => cancelAnimationFrame(animFrame);
+        } else {
+            draw();
+            return;
+        }
     }, [draw]);
 
     return (
@@ -343,6 +486,9 @@ export function GameCanvas({
                 onMouseMove={handleMouseMove}
                 onMouseUp={handleMouseUp}
                 onMouseLeave={handleMouseUp}
+                onTouchStart={handleTouchStart}
+                onTouchMove={handleTouchMove}
+                onTouchEnd={handleTouchEnd}
             />
         </div>
     );

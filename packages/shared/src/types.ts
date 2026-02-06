@@ -91,6 +91,7 @@ export interface ShotParams {
     power: number;      // 0..1
     spinX: number;      // -1..1 (side spin, left/right)
     spinY: number;      // -1..1 (top/back spin)
+    calledPocket?: number; // pocket index 0-5 (required when shooting 8-ball)
 }
 
 export interface BallPlacement {

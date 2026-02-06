@@ -6,7 +6,7 @@
     display: flex;
     flex-direction: column;
     align-items: center;
-    gap: 1.5rem;
+    gap: 1rem;
     padding: 1rem;
     min-height: 100vh;
 }
@@ -19,10 +19,16 @@
     width: 100%;
     max-width: 1016px;
     padding: 0.75rem 1rem;
-    background: var(--bg-glass);
+    background: rgba(26, 26, 37, 0.8);
     backdrop-filter: blur(10px);
     border-radius: 12px;
     border: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+.header-left {
+    display: flex;
+    flex-direction: column;
+    gap: 0.25rem;
 }
 
 .turn-indicator {
@@ -49,21 +55,31 @@
 }
 
 @keyframes pulse-glow {
+    0%, 100% { text-shadow: 0 0 8px rgba(251, 191, 36, 0.5); }
+    50% { text-shadow: 0 0 16px rgba(251, 191, 36, 0.8); }
+}
 
-    0%,
-    100% {
-        text-shadow: 0 0 8px rgba(251, 191, 36, 0.5);
-    }
+.player-names {
+    display: flex;
+    gap: 1rem;
+    font-size: 0.8rem;
+}
 
-    50% {
-        text-shadow: 0 0 16px rgba(251, 191, 36, 0.8);
-    }
+.player-name {
+    display: flex;
+    align-items: center;
+    gap: 0.35rem;
+    color: var(--text-secondary);
+}
+
+.player-name.me {
+    color: var(--accent-secondary);
 }
 
 .game-info {
     display: flex;
     align-items: center;
-    gap: 1rem;
+    gap: 0.75rem;
 }
 
 .group-info {
@@ -73,7 +89,7 @@
 
 .phase-indicator {
     padding: 0.25rem 0.75rem;
-    background: rgba(var(--accent-primary-rgb), 0.2);
+    background: rgba(99, 102, 241, 0.2);
     border-radius: 20px;
     font-size: 0.75rem;
     font-weight: 500;
@@ -85,9 +101,37 @@
     color: #fbbf24;
 }
 
+.phase-indicator.call-pocket {
+    background: rgba(251, 191, 36, 0.2);
+    color: #fbbf24;
+    animation: pulse-glow 1s infinite;
+}
+
+/* Ball Trays */
+.ball-trays {
+    display: flex;
+    gap: 2rem;
+    align-items: center;
+}
+
+.ball-tray-group {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+}
+
+.tray-label {
+    font-size: 0.7rem;
+    color: var(--text-muted);
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    min-width: 80px;
+}
+
 /* Canvas Wrapper */
 .canvas-wrapper {
     position: relative;
+    touch-action: none;
 }
 
 .game-canvas-container {
@@ -103,6 +147,7 @@
     max-width: 100%;
     height: auto;
     cursor: crosshair;
+    touch-action: none;
 }
 
 /* Shot Summary */
@@ -110,8 +155,8 @@
     display: flex;
     flex-direction: column;
     gap: 0.5rem;
-    padding: 0.75rem 1rem;
-    background: var(--bg-glass);
+    padding: 0.5rem 1rem;
+    background: rgba(26, 26, 37, 0.8);
     backdrop-filter: blur(10px);
     border-radius: 8px;
     font-size: 0.875rem;
@@ -142,7 +187,7 @@
 @media (max-width: 600px) {
     .game-page {
         padding: 0.5rem;
-        gap: 1rem;
+        gap: 0.75rem;
     }
 
     .game-header {
@@ -158,5 +203,15 @@
     .game-info {
         flex-direction: column;
         gap: 0.5rem;
+    }
+
+    .ball-trays {
+        flex-direction: column;
+        gap: 0.5rem;
+    }
+
+    .game-controls {
+        flex-direction: column;
+        align-items: center;
     }
 }
