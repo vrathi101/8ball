@@ -46,6 +46,15 @@ function App() {
         );
     }
 
+    // #/practice -> practice/solo mode
+    if (path === '/practice') {
+        return (
+            <div className="app">
+                <GamePage isMyTurn={true} playerSeat={1} practiceMode={true} />
+            </div>
+        );
+    }
+
     // #/game/:gameId?join=TOKEN
     const gameMatch = path.match(/^\/game\/([a-f0-9-]+)$/i);
     if (gameMatch) {

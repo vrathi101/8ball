@@ -59,6 +59,9 @@ export function HomePage({ onNavigate }: HomePageProps) {
                     <button onClick={handleCreate} disabled={creating}>
                         {creating ? 'Creating...' : 'Create Game'}
                     </button>
+                    <button className="secondary" onClick={() => onNavigate('#/practice')}>
+                        Practice Solo
+                    </button>
                     {existingCreds && (
                         <button className="secondary" onClick={() => onNavigate(`#/game/${existingCreds.gameId}`)}>
                             Resume Game

@@ -27,6 +27,7 @@ interface GamePageProps {
     players?: PlayerInfo[];
     gameVersion?: number;
     isAnimating?: boolean;
+    practiceMode?: boolean;
 }
 
 export function GamePage({
@@ -37,6 +38,7 @@ export function GamePage({
     onPlaceBall,
     players,
     isAnimating: externalAnimating,
+    practiceMode = false,
 }: GamePageProps) {
     // Use provided state or create initial state for development
     const [localTableState, setLocalTableState] = useState<TableState>(
@@ -99,11 +101,12 @@ export function GamePage({
         getShotParams,
     } = useAimSystem(displayTableState, isMyTurn && !isAnimating);
 
-    // Check if player should call pocket (group cleared, shooting 8-ball)
+    // Check if player should call pocket (group cleared, shooting 8-ball) — skip in practice
     const shouldCallPocket = useMemo(() => {
+        if (practiceMode) return false;
         if (tableState.openTable || tableState.phase === 'FINISHED') return false;
         return isGroupCleared(tableState, playerSeat) && isMyTurn;
-    }, [tableState, playerSeat, isMyTurn]);
+    }, [tableState, playerSeat, isMyTurn, practiceMode]);
 
     // Show call pocket overlay when needed
     useEffect(() => {
@@ -163,11 +166,30 @@ export function GamePage({
             setIsSimulating(true);
             onSubmitShot(params);
         } else {
-            // Local dev mode - simulate locally with animation
+            // Local dev/practice mode - simulate locally with animation
             setIsSimulating(true);
             try {
                 const result = simulateShot(tableState, params);
-                const newState = applyRules(result.finalState, result.summary);
+
+                // In practice mode, suppress group-related fouls and keep turn
+                if (practiceMode) {
+                    if (result.summary.foul === 'WRONG_BALL_FIRST') {
+                        result.summary.foul = null;
+                        result.summary.foulReason = null;
+                    }
+                    // Never change turns in practice - always player's turn
+                    result.summary.turnChanged = false;
+                }
+
+                let newState = applyRules(result.finalState, result.summary);
+
+                // In practice mode, always keep turn on player and keep aiming
+                if (practiceMode && newState.phase !== 'FINISHED') {
+                    newState = {
+                        ...newState,
+                        turnSeat: playerSeat,
+                    };
+                }
 
                 playAnimation(result.keyframes, newState, (finalState) => {
                     setLocalTableState(finalState);
@@ -179,6 +201,16 @@ export function GamePage({
             }
         }
     }, [canShoot, getShotParams, calledPocket, onSubmitShot, tableState, playAnimation]);
+
+    // Reset game for practice mode
+    const handleReset = useCallback(() => {
+        setLocalTableState(createInitialTableState());
+        setIsSimulating(false);
+        setFoulBanner(null);
+        setTurnBanner(null);
+        setCalledPocket(null);
+        setShowCallPocket(false);
+    }, []);
 
     // Handle ball placement for local dev mode
     const handleLocalPlaceBall = useCallback((tableX: number, tableY: number) => {
@@ -219,6 +251,7 @@ export function GamePage({
 
     // Get group info for display
     const getGroupInfo = () => {
+        if (practiceMode) return 'Practice - Hit any ball';
         if (tableState.openTable) return 'Open Table - Any group';
         const myGroup = playerSeat === 1
             ? tableState.groups.seat1Group
@@ -254,7 +287,15 @@ export function GamePage({
             <div className="game-header">
                 <div className="header-left">
                     <div className="turn-indicator">
-                        {tableState.phase === 'FINISHED' ? (
+                        {practiceMode ? (
+                            tableState.phase === 'FINISHED' ? (
+                                <span className="winner-text">Game Over</span>
+                            ) : isAnimating ? (
+                                <span className="animating">Balls in motion...</span>
+                            ) : (
+                                <span className="your-turn">Practice Mode</span>
+                            )
+                        ) : tableState.phase === 'FINISHED' ? (
                             <span className="winner-text">
                                 {tableState.winningSeat === playerSeat ? 'You Win!' : 'Opponent Wins'}
                             </span>
@@ -290,11 +331,14 @@ export function GamePage({
                     {showCallPocket && calledPocket === null && (
                         <span className="phase-indicator call-pocket">Click a pocket for the 8-ball</span>
                     )}
+                    {practiceMode && (
+                        <button className="reset-btn" onClick={handleReset}>Reset</button>
+                    )}
                 </div>
             </div>
 
             {/* Ball trays */}
-            {!tableState.openTable && (
+            {!tableState.openTable && !practiceMode && (
                 <div className="ball-trays">
                     <div className="ball-tray-group">
                         <span className="tray-label">{myGroup === 'SOLIDS' ? 'Solids' : 'Stripes'} (You)</span>
@@ -342,7 +386,7 @@ export function GamePage({
             </div>
 
             {/* Game controls */}
-            {isMyTurn && !isPlacingBall && !isAnimating && tableState.phase !== 'FINISHED' && (
+            {isMyTurn && !isPlacingBall && !isAnimating && (practiceMode || tableState.phase !== 'FINISHED') && (
                 <GameControls
                     power={aimState.power}
                     spinX={aimState.spinX}
