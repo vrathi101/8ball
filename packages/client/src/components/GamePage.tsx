@@ -11,12 +11,21 @@ import { useAimSystem } from '../hooks/useAimSystem';
 import { useAnimationPlayback } from '../hooks/useAnimationPlayback';
 import './GamePage.css';
 
+interface PlayerInfo {
+    seat: 1 | 2;
+    displayName: string;
+    online: boolean;
+}
+
 interface GamePageProps {
     tableState?: TableState;
     isMyTurn?: boolean;
     playerSeat?: 1 | 2;
     onSubmitShot?: (params: ShotParams) => void;
     onPlaceBall?: (position: { x: number; y: number }) => void;
+    players?: PlayerInfo[];
+    gameVersion?: number;
+    isAnimating?: boolean;
 }
 
 export function GamePage({
@@ -25,28 +34,33 @@ export function GamePage({
     playerSeat = 1,
     onSubmitShot,
     onPlaceBall,
+    isAnimating: externalAnimating,
 }: GamePageProps) {
     // Use provided state or create initial state for development
     const [localTableState, setLocalTableState] = useState<TableState>(
         () => propTableState || createInitialTableState()
     );
 
+    const isMultiplayer = !!propTableState;
     const tableState = propTableState || localTableState;
     const [isSimulating, setIsSimulating] = useState(false);
 
-    // Animation playback hook
-    const { isAnimating, animatedBalls, playAnimation } = useAnimationPlayback();
+    // Animation playback hook (only used in dev/local mode)
+    const { isAnimating: localAnimating, animatedBalls: localAnimatedBalls, playAnimation } = useAnimationPlayback();
+
+    // In multiplayer mode, animation is managed by GameRoom
+    const isAnimating = isMultiplayer ? (externalAnimating || false) : localAnimating;
 
     // Create a display table state that uses animated balls during animation
     const displayTableState = useMemo((): TableState => {
-        if (isAnimating && animatedBalls) {
+        if (!isMultiplayer && localAnimating && localAnimatedBalls) {
             return {
                 ...tableState,
-                balls: animatedBalls,
+                balls: localAnimatedBalls,
             };
         }
         return tableState;
-    }, [tableState, isAnimating, animatedBalls]);
+    }, [tableState, isMultiplayer, localAnimating, localAnimatedBalls]);
 
     // Aim system hook - use display state for visuals
     const {
@@ -61,16 +75,17 @@ export function GamePage({
         getShotParams,
     } = useAimSystem(displayTableState, isMyTurn && !isAnimating);
 
+    // Determine if placing ball (also during break for cue placement)
+    const isPlacingBall = (tableState.ballInHand || (tableState.phase === 'AWAITING_BREAK' && tableState.ballInHand)) && tableState.turnSeat === playerSeat;
+
     // Determine if player can shoot
     const canShoot = isMyTurn &&
         tableState.turnSeat === playerSeat &&
         tableState.phase !== 'BALL_IN_HAND' &&
         tableState.phase !== 'FINISHED' &&
+        !isPlacingBall &&
         !isSimulating &&
         !isAnimating;
-
-    // Determine if placing ball
-    const isPlacingBall = tableState.ballInHand && tableState.turnSeat === playerSeat;
 
     // Handle shot submission
     const handleShoot = useCallback(() => {
@@ -115,6 +130,7 @@ export function GamePage({
             ),
             ballInHand: false,
             ballInHandAnywhere: false,
+            phase: prev.phase === 'AWAITING_BREAK' ? 'AWAITING_BREAK' : 'AIMING',
         }));
     }, [isPlacingBall]);
 

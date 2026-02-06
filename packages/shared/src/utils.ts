@@ -138,7 +138,7 @@ export function createInitialTableState(): TableState {
         openTable: true,
         turnSeat: 1,  // Seat 1 breaks
         phase: 'AWAITING_BREAK',
-        ballInHand: false,
+        ballInHand: true,
         ballInHandAnywhere: false,
         winningSeat: null,
         lastShotSummary: null,

@@ -124,7 +124,7 @@ export function setupSocketHandlers(io: Server, db: Database): void {
             }
 
             // Check game phase
-            if (state.tableState.phase === 'BALL_IN_HAND') {
+            if (state.tableState.phase === 'BALL_IN_HAND' || state.tableState.ballInHand) {
                 socket.emit('error', { type: 'error', code: 'INVALID_ACTION', message: 'Place cue ball first' });
                 return;
             }
@@ -185,7 +185,7 @@ export function setupSocketHandlers(io: Server, db: Database): void {
         });
 
         // Handle ball placement
-        socket.on('placeBall', (data: WsClientMessage) => {
+        socket.on('placeBall', async (data: WsClientMessage) => {
             if (data.type !== 'placeBall') return;
             if (!socket.gameId || !socket.seat) {
                 socket.emit('error', { type: 'error', code: 'NOT_AUTHENTICATED', message: 'Not authenticated' });
@@ -229,7 +229,8 @@ export function setupSocketHandlers(io: Server, db: Database): void {
 
             console.log(`🎱 Ball placed by seat ${socket.seat}: (${position.x.toFixed(3)}, ${position.y.toFixed(3)})`);
 
-            // Update cue ball position
+            // Update cue ball position - keep AWAITING_BREAK phase for break shot
+            const isBreak = state.tableState.phase === 'AWAITING_BREAK';
             const newTableState: TableState = {
                 ...state.tableState,
                 balls: state.tableState.balls.map(b =>
@@ -239,7 +240,7 @@ export function setupSocketHandlers(io: Server, db: Database): void {
                 ),
                 ballInHand: false,
                 ballInHandAnywhere: false,
-                phase: 'AIMING',
+                phase: isBreak ? 'AWAITING_BREAK' : 'AIMING',
             };
 
             // Update version and persist
@@ -248,21 +249,26 @@ export function setupSocketHandlers(io: Server, db: Database): void {
             gameService.updateGame(socket.gameId, { version: newVersion });
             gameService.saveSnapshot(socket.gameId, newVersion, newTableState);
 
-            // Broadcast new state to all players
-            const stateSync: WsServerStateSync = {
-                type: 'stateSync',
-                gameState: {
-                    gameId: socket.gameId,
-                    status: state.game.status,
-                    version: newVersion,
-                    tableState: newTableState,
-                    players: state.players,
-                    yourSeat: socket.seat,
-                },
-                events: [],
-            };
-
-            io.to(socket.gameId).emit('stateSync', stateSync);
+            // Broadcast new state to all players (each gets their own seat)
+            const sockets = await io.in(socket.gameId).fetchSockets();
+            for (const s of sockets) {
+                const authSocket = s as unknown as AuthenticatedSocket;
+                if (authSocket.seat) {
+                    const stateSync: WsServerStateSync = {
+                        type: 'stateSync',
+                        gameState: {
+                            gameId: socket.gameId,
+                            status: state.game.status,
+                            version: newVersion,
+                            tableState: newTableState,
+                            players: state.players,
+                            yourSeat: authSocket.seat,
+                        },
+                        events: [],
+                    };
+                    s.emit('stateSync', stateSync);
+                }
+            }
         });
 
         // Handle disconnection

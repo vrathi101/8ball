@@ -47,7 +47,7 @@ interface UseGameSocketReturn {
 }
 
 export function useGameSocket({
-    serverUrl = 'http://localhost:3000',
+    serverUrl = '',
     gameId,
     playerToken,
     onShotResult,

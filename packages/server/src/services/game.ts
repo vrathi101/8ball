@@ -278,7 +278,7 @@ export class GameService {
     /**
      * Log a game event
      */
-    private logEvent(gameId: string, type: string, payload: Record<string, unknown>): void {
+    logEvent(gameId: string, type: string, payload: Record<string, unknown>): void {
         const id = generateId();
         const seq = this.getNextEventSeq(gameId);
 
