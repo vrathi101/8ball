@@ -43,6 +43,11 @@
     animation: pulse-glow 2s infinite;
 }
 
+.animating {
+    color: #60a5fa;
+    animation: pulse-glow 0.5s infinite;
+}
+
 @keyframes pulse-glow {
 
     0%,

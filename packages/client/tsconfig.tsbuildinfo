@@ -1,1 +1,1 @@
-{"root":["./src/app.tsx","./src/main.tsx","./src/components/gamecanvas.tsx","./src/components/gamecontrols.tsx","./src/components/gamepage.tsx","./src/hooks/useaimsystem.ts","./src/hooks/usegamesocket.ts"],"version":"5.9.3"}
+{"root":["./src/app.tsx","./src/main.tsx","./src/components/gamecanvas.tsx","./src/components/gamecontrols.tsx","./src/components/gamepage.tsx","./src/hooks/useaimsystem.ts","./src/hooks/useanimationplayback.ts","./src/hooks/usegamesocket.ts"],"version":"5.9.3"}
