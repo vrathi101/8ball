@@ -175,6 +175,20 @@ export function isGroupEmpty(state: TableState, group: BallGroup): boolean {
     return getRemainingBalls(state, group).length === 0;
 }
 
+export function isGroupCleared(state: TableState, seat: Seat): boolean {
+    const group = seat === 1 ? state.groups.seat1Group : state.groups.seat2Group;
+    if (!group) return false;
+
+    for (const ball of state.balls) {
+        if (!ball.inPlay || ball.id === 'cue' || ball.id === '8') continue;
+        const num = parseInt(ball.id, 10);
+        if (group === 'SOLIDS' && num >= 1 && num <= 7) return false;
+        if (group === 'STRIPES' && num >= 9 && num <= 15) return false;
+    }
+
+    return true;
+}
+
 // ============================================
 // ID Generation
 // ============================================

@@ -21,6 +21,8 @@ import {
     vec2Normalize,
     vec2Dot,
     vec2Distance,
+    vec2Length,
+    isGroupCleared,
 } from './utils.js';
 import { TABLE, POCKETS, PHYSICS } from './constants.js';
 
@@ -43,24 +45,21 @@ interface SimBall {
     pos: Vec2;
     vel: Vec2;
     inPlay: boolean;
+    spin: Vec2;       // spin X (side) and Y (follow/draw)
+    hasHitBall: boolean; // whether cue ball has made first contact
 }
 
-// CollisionEvent interface reserved for future use (replay features)
-// interface CollisionEvent {
-//     time: number;
-//     type: 'ball-ball' | 'ball-cushion' | 'ball-pocket';
-//     ballId: BallId;
-//     otherId?: BallId;
-// }
+// Minimum velocity to count a cushion hit as a real rail contact
+const MIN_RAIL_VELOCITY = 0.1;
+
+// Spin effect strengths
+const SPIN_FOLLOW_DRAW = 0.35;  // how much follow/draw affects velocity after contact
+const SPIN_SIDE_CUSHION = 0.25; // how much side spin deflects on cushion rebound
 
 // ============================================
 // Main Simulation Function
 // ============================================
 
-/**
- * Simulate a shot from the current table state
- * Returns the final state, animation keyframes, and shot summary
- */
 export function simulateShot(
     tableState: TableState,
     shotParams: ShotParams
@@ -71,6 +70,8 @@ export function simulateShot(
         pos: { x: b.pos.x, y: b.pos.y },
         vel: { x: 0, y: 0 },
         inPlay: b.inPlay,
+        spin: { x: 0, y: 0 },
+        hasHitBall: false,
     }));
 
     // Find cue ball and apply initial velocity
@@ -86,12 +87,18 @@ export function simulateShot(
         y: Math.sin(shotParams.angle) * speed,
     };
 
+    // Initialize cue ball spin from shot params
+    cueBall.spin = {
+        x: shotParams.spinX || 0,
+        y: shotParams.spinY || 0,
+    };
+
     // Track events during simulation
     const pocketedBalls: BallId[] = [];
+    const pocketIndices: Map<BallId, number> = new Map();
     let firstContact: BallId | null = null;
     let scratch = false;
     let railAfterContact = false;
-    let anyBallHitRail = false;
 
     // Keyframes for animation
     const keyframes: KeyFrame[] = [];
@@ -161,6 +168,15 @@ export function simulateShot(
                             firstContact = b1.id;
                         }
                     }
+
+                    // Apply follow/draw spin on cue ball's first contact
+                    if (b1.id === 'cue' && !b1.hasHitBall) {
+                        b1.hasHitBall = true;
+                        applyFollowDrawSpin(b1);
+                    } else if (b2.id === 'cue' && !b2.hasHitBall) {
+                        b2.hasHitBall = true;
+                        applyFollowDrawSpin(b2);
+                    }
                 }
             }
         }
@@ -171,8 +187,8 @@ export function simulateShot(
 
             const cushionHit = handleCushionCollision(ball);
             if (cushionHit) {
-                anyBallHitRail = true;
-                if (firstContact !== null) {
+                // Only count as rail contact if ball has meaningful velocity
+                if (vec2Length(ball.vel) > MIN_RAIL_VELOCITY && firstContact !== null) {
                     railAfterContact = true;
                 }
             }
@@ -182,9 +198,11 @@ export function simulateShot(
         for (const ball of balls) {
             if (!ball.inPlay) continue;
 
-            if (isBallInPocket(ball.pos)) {
+            const pocketIdx = getBallPocketIndex(ball.pos);
+            if (pocketIdx >= 0) {
                 ball.inPlay = false;
                 pocketedBalls.push(ball.id);
+                pocketIndices.set(ball.id, pocketIdx);
 
                 if (ball.id === 'cue') {
                     scratch = true;
@@ -207,7 +225,7 @@ export function simulateShot(
         pocketedBalls,
         scratch,
         railAfterContact,
-        anyBallHitRail
+        pocketIndices
     );
 
     return {
@@ -215,6 +233,25 @@ export function simulateShot(
         keyframes,
         summary,
     };
+}
+
+// ============================================
+// Spin Physics
+// ============================================
+
+function applyFollowDrawSpin(cueBall: SimBall): void {
+    const spinY = cueBall.spin.y;
+    if (Math.abs(spinY) < 0.01) return;
+
+    const speed = vec2Length(cueBall.vel);
+    if (speed < 0.01) return;
+
+    const dir = vec2Normalize(cueBall.vel);
+
+    // spinY > 0 = top spin (follow): add velocity in travel direction
+    // spinY < 0 = back spin (draw): subtract velocity (pull back)
+    const adjustment = speed * spinY * SPIN_FOLLOW_DRAW;
+    cueBall.vel = vec2Add(cueBall.vel, vec2Scale(dir, adjustment));
 }
 
 // ============================================
@@ -255,11 +292,13 @@ function handleCushionCollision(ball: SimBall): boolean {
     const r = TABLE.BALL_RADIUS;
     const cushion = TABLE.CUSHION;
     let hit = false;
+    const isCue = ball.id === 'cue';
 
     // Left cushion
     if (ball.pos.x - r < cushion) {
         ball.pos.x = cushion + r;
         ball.vel.x = -ball.vel.x * PHYSICS.CUSHION_RESTITUTION;
+        if (isCue) applySideSpinOnCushion(ball, 'y');
         hit = true;
     }
 
@@ -267,6 +306,7 @@ function handleCushionCollision(ball: SimBall): boolean {
     if (ball.pos.x + r > TABLE.WIDTH - cushion) {
         ball.pos.x = TABLE.WIDTH - cushion - r;
         ball.vel.x = -ball.vel.x * PHYSICS.CUSHION_RESTITUTION;
+        if (isCue) applySideSpinOnCushion(ball, 'y');
         hit = true;
     }
 
@@ -274,6 +314,7 @@ function handleCushionCollision(ball: SimBall): boolean {
     if (ball.pos.y - r < cushion) {
         ball.pos.y = cushion + r;
         ball.vel.y = -ball.vel.y * PHYSICS.CUSHION_RESTITUTION;
+        if (isCue) applySideSpinOnCushion(ball, 'x');
         hit = true;
     }
 
@@ -281,20 +322,35 @@ function handleCushionCollision(ball: SimBall): boolean {
     if (ball.pos.y + r > TABLE.HEIGHT - cushion) {
         ball.pos.y = TABLE.HEIGHT - cushion - r;
         ball.vel.y = -ball.vel.y * PHYSICS.CUSHION_RESTITUTION;
+        if (isCue) applySideSpinOnCushion(ball, 'x');
         hit = true;
     }
 
     return hit;
 }
 
-function isBallInPocket(pos: Vec2): boolean {
-    for (const pocket of POCKETS) {
-        const dist = vec2Distance(pos, pocket);
+function applySideSpinOnCushion(ball: SimBall, axis: 'x' | 'y'): void {
+    const spinX = ball.spin.x;
+    if (Math.abs(spinX) < 0.01) return;
+
+    // Side spin deflects the ball along the cushion
+    const speed = vec2Length(ball.vel);
+    const deflection = speed * spinX * SPIN_SIDE_CUSHION;
+    if (axis === 'y') {
+        ball.vel.y += deflection;
+    } else {
+        ball.vel.x += deflection;
+    }
+}
+
+export function getBallPocketIndex(pos: Vec2): number {
+    for (let i = 0; i < POCKETS.length; i++) {
+        const dist = vec2Distance(pos, POCKETS[i]);
         if (dist < TABLE.POCKET_RADIUS) {
-            return true;
+            return i;
         }
     }
-    return false;
+    return -1;
 }
 
 // ============================================
@@ -336,7 +392,7 @@ function buildShotSummary(
     pocketedBalls: BallId[],
     scratch: boolean,
     railAfterContact: boolean,
-    _anyBallHitRail: boolean
+    pocketIndices: Map<BallId, number>
 ): ShotSummary {
     // Determine foul type
     let foul: FoulType | null = null;
@@ -351,13 +407,12 @@ function buildShotSummary(
     } else if (!railAfterContact && pocketedBalls.length === 0) {
         foul = 'NO_RAIL';
         foulReason = 'No ball hit a rail after contact';
-    } else if (!originalState.openTable && firstContact !== '8') {
-        // Check if player hit their own group first
+    } else if (!originalState.openTable) {
         const playerGroup = originalState.turnSeat === 1
             ? originalState.groups.seat1Group
             : originalState.groups.seat2Group;
 
-        if (playerGroup) {
+        if (playerGroup && firstContact !== '8') {
             const firstBallNum = parseInt(firstContact, 10);
             const hitSolid = firstBallNum >= 1 && firstBallNum <= 7;
             const hitStripe = firstBallNum >= 9 && firstBallNum <= 15;
@@ -368,6 +423,14 @@ function buildShotSummary(
             } else if (playerGroup === 'STRIPES' && hitSolid) {
                 foul = 'WRONG_BALL_FIRST';
                 foulReason = 'Hit solid ball first when assigned stripes';
+            }
+        }
+
+        // Fix: hitting 8-ball first when group NOT cleared is a foul
+        if (playerGroup && firstContact === '8') {
+            if (!isGroupCleared(originalState, originalState.turnSeat)) {
+                foul = 'WRONG_BALL_FIRST';
+                foulReason = 'Hit 8-ball first before clearing group';
             }
         }
     }
@@ -422,5 +485,6 @@ function buildShotSummary(
         turnChanged,
         gameOver,
         winner: winner as ShotSummary['winner'],
+        pocketIndices: Object.fromEntries(pocketIndices),
     };
 }

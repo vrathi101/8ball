@@ -10,7 +10,7 @@ import {
     Seat,
     BallGroup,
 } from './types.js';
-import { getOpponentSeat, getOpponentGroup } from './utils.js';
+import { getOpponentSeat, getOpponentGroup, isGroupCleared } from './utils.js';
 
 // ============================================
 // Apply Shot Result to Game State
@@ -241,32 +241,8 @@ export function validateBallPlacement(
     return { valid: true };
 }
 
-// ============================================
-// Game State Queries
-// ============================================
-
-/**
- * Check if a player has cleared their group
- */
-export function isGroupCleared(state: TableState, seat: Seat): boolean {
-    const group = seat === 1 ? state.groups.seat1Group : state.groups.seat2Group;
-
-    if (!group) return false;
-
-    for (const ball of state.balls) {
-        if (!ball.inPlay || ball.id === 'cue' || ball.id === '8') continue;
-
-        const num = parseInt(ball.id, 10);
-        if (group === 'SOLIDS' && num >= 1 && num <= 7) {
-            return false;
-        }
-        if (group === 'STRIPES' && num >= 9 && num <= 15) {
-            return false;
-        }
-    }
-
-    return true;
-}
+// Re-export isGroupCleared from utils (moved there to avoid circular dep with physics)
+export { isGroupCleared } from './utils.js';
 
 /**
  * Check if it's a player's turn to shoot the 8-ball

@@ -79,6 +79,7 @@ export interface ShotSummary {
     turnChanged: boolean;
     gameOver: boolean;
     winner: Seat | null;
+    pocketIndices?: Record<string, number>;
 }
 
 // ============================================

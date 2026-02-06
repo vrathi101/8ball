@@ -161,11 +161,47 @@ export function setupSocketHandlers(io: Server, db: Database): void {
 
                 gameService.saveSnapshot(socket.gameId, newVersion, newTableState);
 
+                // Generate events
+                gameService.logEvent(socket.gameId, 'SHOT_TAKEN', {
+                    seat: socket.seat,
+                    angle: shotParams.angle,
+                    power: shotParams.power,
+                });
+                for (const ballId of simResult.summary.pocketedBalls) {
+                    gameService.logEvent(socket.gameId, 'BALL_POCKETED', { ballId, seat: socket.seat });
+                }
+                if (simResult.summary.foul) {
+                    gameService.logEvent(socket.gameId, 'FOUL_COMMITTED', {
+                        seat: socket.seat,
+                        foul: simResult.summary.foul,
+                        reason: simResult.summary.foulReason,
+                    });
+                }
+                if (simResult.summary.turnChanged && !simResult.summary.gameOver) {
+                    gameService.logEvent(socket.gameId, 'TURN_CHANGED', {
+                        newTurnSeat: newTableState.turnSeat,
+                    });
+                }
+                if (simResult.summary.gameOver) {
+                    gameService.logEvent(socket.gameId, 'GAME_WON', {
+                        winner: simResult.summary.winner,
+                    });
+                }
+
+                const events = gameService.getEventsSince(socket.gameId, 0);
+
                 // Send shot result to all players in the game
                 const shotResult: WsServerShotResult = {
                     type: 'shotResult',
                     keyframes: simResult.keyframes,
-                    events: [], // TODO: Generate proper events
+                    events: events.map(e => ({
+                        id: '',
+                        gameId: socket.gameId!,
+                        seq: e.seq,
+                        type: e.type as WsServerShotResult['events'][0]['type'],
+                        payload: e.payload,
+                        createdAt: new Date(e.created_at),
+                    })),
                     newState: newTableState,
                     version: newVersion,
                 };
