@@ -1,6 +1,7 @@
 import { useState, useCallback, useEffect } from 'react';
 import { useGameSocket } from '../hooks/useGameSocket';
 import { useAnimationPlayback } from '../hooks/useAnimationPlayback';
+import { useSoundManager } from '../audio/useSoundManager';
 import { GamePage } from './GamePage';
 import { GameOverScreen } from './GameOverScreen';
 import { loadCredentials, clearCredentials } from '../utils/credentials';
@@ -14,7 +15,8 @@ interface GameRoomProps {
 export function GameRoom({ gameId, onNavigate }: GameRoomProps) {
     const creds = loadCredentials();
     const [displayState, setDisplayState] = useState<TableState | null>(null);
-    const { isAnimating, animatedBalls, playAnimation } = useAnimationPlayback();
+    const { soundManager } = useSoundManager();
+    const { isAnimating, animatedBalls, playAnimation } = useAnimationPlayback(soundManager);
 
     const handleShotResult = useCallback((keyframes: KeyFrame[], newState: TableState) => {
         playAnimation(keyframes, newState, (finalState) => {
