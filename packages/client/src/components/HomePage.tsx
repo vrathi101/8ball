@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { createGame } from '../utils/api';
 import { saveCredentials, loadCredentials } from '../utils/credentials';
+import { clearPracticeSnapshot, getPracticeLastSavedAt } from '../utils/practiceState';
 
 interface HomePageProps {
     onNavigate: (hash: string) => void;
@@ -12,6 +13,7 @@ export function HomePage({ onNavigate }: HomePageProps) {
     const [error, setError] = useState('');
     const [creating, setCreating] = useState(false);
     const existingCreds = loadCredentials();
+    const practiceSavedAt = getPracticeLastSavedAt();
 
     const handleCreate = async () => {
         if (!name.trim()) { setError('Enter your name'); return; }
@@ -59,9 +61,29 @@ export function HomePage({ onNavigate }: HomePageProps) {
                     <button onClick={handleCreate} disabled={creating}>
                         {creating ? 'Creating...' : 'Create Game'}
                     </button>
-                    <button className="secondary" onClick={() => onNavigate('#/practice')}>
-                        Practice Solo
-                    </button>
+                    {practiceSavedAt ? (
+                        <>
+                            <button className="secondary" onClick={() => onNavigate('#/practice')}>
+                                Resume Practice
+                            </button>
+                            <button
+                                className="secondary"
+                                onClick={() => {
+                                    clearPracticeSnapshot();
+                                    onNavigate('#/practice');
+                                }}
+                            >
+                                New Practice Rack
+                            </button>
+                            <div className="saved-state-info">
+                                Saved {new Date(practiceSavedAt).toLocaleString()}
+                            </div>
+                        </>
+                    ) : (
+                        <button className="secondary" onClick={() => onNavigate('#/practice')}>
+                            Practice Solo
+                        </button>
+                    )}
                     {existingCreds && (
                         <button className="secondary" onClick={() => onNavigate(`#/game/${existingCreds.gameId}`)}>
                             Resume Game

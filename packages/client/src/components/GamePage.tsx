@@ -11,6 +11,7 @@ import { GameControls } from './GameControls';
 import { useAimSystem } from '../hooks/useAimSystem';
 import { useAnimationPlayback } from '../hooks/useAnimationPlayback';
 import { useSoundManager } from '../audio/useSoundManager';
+import { loadPracticeSnapshot, savePracticeSnapshot } from '../utils/practiceState';
 import './GamePage.css';
 
 // Spin control overlay component (positioned top-right of canvas like GamePigeon)
@@ -123,9 +124,20 @@ export function GamePage({
     isAnimating: externalAnimating,
     practiceMode = false,
 }: GamePageProps) {
+    const getInitialLocalState = (): TableState => {
+        if (propTableState) return propTableState;
+        if (practiceMode) {
+            const snapshot = loadPracticeSnapshot();
+            if (snapshot) {
+                return snapshot.tableState;
+            }
+        }
+        return createInitialTableState();
+    };
+
     // Use provided state or create initial state for development
     const [localTableState, setLocalTableState] = useState<TableState>(
-        () => propTableState || createInitialTableState()
+        getInitialLocalState
     );
 
     const isMultiplayer = !!propTableState;
@@ -334,6 +346,11 @@ export function GamePage({
             setIsSimulating(false);
         }
     }, [propTableState]);
+
+    useEffect(() => {
+        if (!practiceMode || propTableState) return;
+        savePracticeSnapshot(localTableState);
+    }, [practiceMode, propTableState, localTableState]);
 
     // Get group info for display
     const getGroupInfo = () => {

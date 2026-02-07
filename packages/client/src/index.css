@@ -246,6 +246,11 @@ button:disabled {
   font-size: 0.875rem;
 }
 
+.saved-state-info {
+  font-size: 0.75rem;
+  color: var(--text-muted);
+}
+
 .invite-section {
   display: flex;
   flex-direction: column;
