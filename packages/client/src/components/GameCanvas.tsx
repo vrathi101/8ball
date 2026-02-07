@@ -4,7 +4,7 @@
  */
 
 import { useRef, useEffect, useCallback } from 'react';
-import { TableState, BallState, Vec2 } from '@8ball/shared';
+import { TableState, BallState, Vec2, KeyFrameEvent } from '@8ball/shared';
 import { TABLE, POCKETS, BALL_COLORS, STRIPE_BALL_IDS } from '@8ball/shared';
 
 interface TrajectoryPoint {
@@ -17,6 +17,7 @@ interface CollisionPreview {
     point: Vec2;
     targetBall?: BallState;
     reflectAngle?: number;
+    cueDeflectionAngle?: number;
 }
 
 interface GameCanvasProps {
@@ -34,6 +35,7 @@ interface GameCanvasProps {
     onPocketClick?: (pocketIndex: number) => void;
     selectedPocket?: number | null;
     previousBalls?: BallState[];
+    collisionEvents?: KeyFrameEvent[];
 }
 
 // Canvas scaling (pixels per meter)
@@ -66,9 +68,28 @@ export function GameCanvas({
     onPocketClick,
     selectedPocket,
     previousBalls,
+    collisionEvents = [],
 }: GameCanvasProps) {
     const canvasRef = useRef<HTMLCanvasElement>(null);
     const pocketAnimRef = useRef<Map<string, { startTime: number; pocketIdx: number }>>(new Map());
+    const impactFlashRef = useRef<Array<{ x: number; y: number; startTime: number; speed: number }>>([]);
+    const feltPatternRef = useRef<CanvasPattern | null>(null);
+
+    // Track collision events for impact flashes
+    useEffect(() => {
+        const now = performance.now();
+        for (const evt of collisionEvents) {
+            if (evt.type === 'ball_ball' && evt.speed > 3.0) {
+                // Avoid duplicates by checking proximity
+                const isDupe = impactFlashRef.current.some(f =>
+                    Math.abs(f.x - evt.pos.x) < 0.01 && Math.abs(f.y - evt.pos.y) < 0.01 && now - f.startTime < 150
+                );
+                if (!isDupe) {
+                    impactFlashRef.current.push({ x: evt.pos.x, y: evt.pos.y, startTime: now, speed: evt.speed });
+                }
+            }
+        }
+    }, [collisionEvents]);
 
     // Track balls transitioning inPlay: true -> false for pocket animation
     useEffect(() => {
@@ -188,10 +209,26 @@ export function GameCanvas({
         ctx.fillStyle = '#0d6b3f';
         ctx.fillRect(railPx, railPx, CANVAS_WIDTH - railPx * 2, CANVAS_HEIGHT - railPx * 2);
 
-        // Draw subtle felt texture effect
-        ctx.fillStyle = 'rgba(0, 100, 50, 0.15)';
-        for (let i = 0; i < CANVAS_WIDTH; i += 4) {
-            ctx.fillRect(i, railPx, 1, CANVAS_HEIGHT - railPx * 2);
+        // Draw felt cloth texture (noise pattern)
+        if (!feltPatternRef.current) {
+            const tile = document.createElement('canvas');
+            tile.width = 8;
+            tile.height = 8;
+            const tCtx = tile.getContext('2d')!;
+            const imgData = tCtx.createImageData(8, 8);
+            for (let i = 0; i < imgData.data.length; i += 4) {
+                const noise = Math.random() * 20 - 10;
+                imgData.data[i] = 13 + noise;      // R
+                imgData.data[i + 1] = 107 + noise;  // G
+                imgData.data[i + 2] = 63 + noise;   // B
+                imgData.data[i + 3] = 30;            // A (subtle overlay)
+            }
+            tCtx.putImageData(imgData, 0, 0);
+            feltPatternRef.current = ctx.createPattern(tile, 'repeat');
+        }
+        if (feltPatternRef.current) {
+            ctx.fillStyle = feltPatternRef.current;
+            ctx.fillRect(railPx, railPx, CANVAS_WIDTH - railPx * 2, CANVAS_HEIGHT - railPx * 2);
         }
 
         // Draw pockets
@@ -239,6 +276,35 @@ export function GameCanvas({
         ctx.beginPath();
         ctx.arc(footX, footY, 4, 0, Math.PI * 2);
         ctx.fill();
+
+        // Draw diamond sights on rails
+        ctx.fillStyle = 'rgba(255, 255, 255, 0.15)';
+        const diamondSize = 3;
+        const drawDiamond = (dx: number, dy: number) => {
+            ctx.beginPath();
+            ctx.moveTo(dx, dy - diamondSize);
+            ctx.lineTo(dx + diamondSize, dy);
+            ctx.lineTo(dx, dy + diamondSize);
+            ctx.lineTo(dx - diamondSize, dy);
+            ctx.closePath();
+            ctx.fill();
+        };
+        // Long rails (top and bottom): 8 diamonds between corner pockets
+        const longRailY_top = TABLE.CUSHION * SCALE * 0.35;
+        const longRailY_bot = CANVAS_HEIGHT - TABLE.CUSHION * SCALE * 0.35;
+        for (let i = 1; i <= 8; i++) {
+            const x = (TABLE.CUSHION + (TABLE.WIDTH - 2 * TABLE.CUSHION) * i / 9) * SCALE;
+            drawDiamond(x, longRailY_top);
+            drawDiamond(x, longRailY_bot);
+        }
+        // Short rails (left and right): 4 diamonds between corner pockets
+        const shortRailX_left = TABLE.CUSHION * SCALE * 0.35;
+        const shortRailX_right = CANVAS_WIDTH - TABLE.CUSHION * SCALE * 0.35;
+        for (let i = 1; i <= 4; i++) {
+            const y = (TABLE.CUSHION + (TABLE.HEIGHT - 2 * TABLE.CUSHION) * i / 5) * SCALE;
+            drawDiamond(shortRailX_left, y);
+            drawDiamond(shortRailX_right, y);
+        }
     }, [callingPocket, selectedPocket]);
 
     const drawBall = useCallback((ctx: CanvasRenderingContext2D, ball: BallState, alpha = 1, scale = 1) => {
@@ -251,11 +317,15 @@ export function GameCanvas({
 
         ctx.globalAlpha = alpha;
 
-        // Ball shadow
+        // Elliptical ball shadow (depth effect - light from upper left)
+        ctx.save();
+        ctx.translate(x + 3 * scale, y + 4 * scale);
+        ctx.scale(1, 0.6); // compress vertically for ellipse
         ctx.beginPath();
-        ctx.arc(x + 3 * scale, y + 3 * scale, radius, 0, Math.PI * 2);
-        ctx.fillStyle = `rgba(0, 0, 0, ${0.3 * alpha})`;
+        ctx.arc(0, 0, radius * 1.05, 0, Math.PI * 2);
+        ctx.fillStyle = `rgba(0, 0, 0, ${0.35 * alpha})`;
         ctx.fill();
+        ctx.restore();
 
         // Ball base
         ctx.beginPath();
@@ -303,7 +373,7 @@ export function GameCanvas({
 
     const drawPocketAnimations = useCallback((ctx: CanvasRenderingContext2D) => {
         const now = performance.now();
-        const ANIM_DURATION = 300;
+        const ANIM_DURATION = 500;
         const toRemove: string[] = [];
 
         for (const [ballId, anim] of pocketAnimRef.current) {
@@ -314,23 +384,35 @@ export function GameCanvas({
             }
 
             const t = elapsed / ANIM_DURATION;
-            const alpha = 1 - t;
-            const scale = 1 - t * 0.8;
+            // Cubic ease-in: ball accelerates into pocket
+            const tCubic = t * t * t;
+            // Alpha: gradual then rapid fade
+            const alpha = Math.max(0, 1 - tCubic * 1.5);
+            // Scale: shrinks faster at end (depth illusion)
+            const scale = Math.max(0, 1 - tCubic * 1.2);
 
-            // Find ball in current state (it's not inPlay but we still have its last known position)
             const ball = tableState.balls.find(b => b.id === ballId);
             if (!ball) continue;
 
-            // Lerp ball position toward pocket center
+            // Curved path toward pocket with slight arc
             const pocket = POCKETS[anim.pocketIdx];
+            const curveOffset = Math.sin(t * Math.PI) * 0.01 * (1 - t);
             const animBall: BallState = {
                 ...ball,
                 pos: {
-                    x: ball.pos.x + (pocket.x - ball.pos.x) * t,
-                    y: ball.pos.y + (pocket.y - ball.pos.y) * t,
+                    x: ball.pos.x + (pocket.x - ball.pos.x) * tCubic + curveOffset,
+                    y: ball.pos.y + (pocket.y - ball.pos.y) * tCubic + curveOffset,
                 },
-                inPlay: true, // Force draw
+                inPlay: true,
             };
+
+            // Growing shadow as ball "falls deeper"
+            const [sx, sy] = toCanvas(animBall.pos.x, animBall.pos.y);
+            const shadowRadius = TABLE.BALL_RADIUS * SCALE * scale * (1 + tCubic * 0.5);
+            ctx.beginPath();
+            ctx.arc(sx, sy, shadowRadius, 0, Math.PI * 2);
+            ctx.fillStyle = `rgba(0, 0, 0, ${0.4 + tCubic * 0.4})`;
+            ctx.fill();
 
             drawBall(ctx, animBall, alpha, scale);
         }
@@ -392,46 +474,167 @@ export function GameCanvas({
                 ctx.stroke();
                 ctx.setLineDash([]);
             }
+
+            // Draw cue ball deflection path (position play guide)
+            if (collision.cueDeflectionAngle !== undefined) {
+                const deflectLength = 0.5 * SCALE; // 50cm
+                const [ghostX2, ghostY2] = toCanvas(collision.point.x, collision.point.y);
+                const deflEndX = ghostX2 + Math.cos(collision.cueDeflectionAngle) * deflectLength;
+                const deflEndY = ghostY2 + Math.sin(collision.cueDeflectionAngle) * deflectLength;
+
+                ctx.strokeStyle = 'rgba(150, 200, 255, 0.3)';
+                ctx.lineWidth = 1.5;
+                ctx.setLineDash([4, 6]);
+                ctx.beginPath();
+                ctx.moveTo(ghostX2, ghostY2);
+                ctx.lineTo(deflEndX, deflEndY);
+                ctx.stroke();
+                ctx.setLineDash([]);
+            }
         }
 
         // Draw cue stick
-        const cueLength = 0.5 * SCALE; // Visual cue length
-        const cueStart = aimPower * 0.15 * SCALE + 20; // Pull back based on power
+        // The cue extends from the ball position outward (opposite aim direction).
+        // We compute ideal positions, then clip the line segment to canvas bounds
+        // using Liang-Barsky so it's ALWAYS visible regardless of ball position.
+        const idealCueLength = 0.5 * SCALE;
+        const cueStartDist = aimPower * 0.25 * SCALE + 20; // Pull back based on power
         const cueAngle = aimAngle + Math.PI; // Point opposite to aim direction
 
-        const cueStartX = startX + Math.cos(cueAngle) * cueStart;
-        const cueStartY = startY + Math.sin(cueAngle) * cueStart;
-        const cueEndX = cueStartX + Math.cos(cueAngle) * cueLength;
-        const cueEndY = cueStartY + Math.sin(cueAngle) * cueLength;
+        const cosA = Math.cos(cueAngle);
+        const sinA = Math.sin(cueAngle);
 
-        // Cue shadow
-        ctx.strokeStyle = 'rgba(0, 0, 0, 0.3)';
-        ctx.lineWidth = 10;
-        ctx.lineCap = 'round';
-        ctx.beginPath();
-        ctx.moveTo(cueStartX + 2, cueStartY + 2);
-        ctx.lineTo(cueEndX + 2, cueEndY + 2);
-        ctx.stroke();
+        // Ideal (unclipped) cue tip and butt positions
+        const idealTipX = startX + cosA * cueStartDist;
+        const idealTipY = startY + sinA * cueStartDist;
+        const idealButtX = idealTipX + cosA * idealCueLength;
+        const idealButtY = idealTipY + sinA * idealCueLength;
 
-        // Cue stick
-        const gradient = ctx.createLinearGradient(cueStartX, cueStartY, cueEndX, cueEndY);
-        gradient.addColorStop(0, '#f5deb3');
-        gradient.addColorStop(0.7, '#8b4513');
-        gradient.addColorStop(1, '#2d1810');
+        // Liang-Barsky line clipping to canvas rectangle
+        const clipLine = (x0: number, y0: number, x1: number, y1: number): [number, number, number, number] | null => {
+            const dx = x1 - x0;
+            const dy = y1 - y0;
+            const pad = 4; // small padding from edge
+            const xmin = pad, xmax = CANVAS_WIDTH - pad;
+            const ymin = pad, ymax = CANVAS_HEIGHT - pad;
 
-        ctx.strokeStyle = gradient;
-        ctx.lineWidth = 8;
-        ctx.beginPath();
-        ctx.moveTo(cueStartX, cueStartY);
-        ctx.lineTo(cueEndX, cueEndY);
-        ctx.stroke();
+            const p = [-dx, dx, -dy, dy];
+            const q = [x0 - xmin, xmax - x0, y0 - ymin, ymax - y0];
 
-        // Cue tip
-        ctx.fillStyle = '#1e90ff';
-        ctx.beginPath();
-        ctx.arc(cueStartX, cueStartY, 5, 0, Math.PI * 2);
-        ctx.fill();
+            let tMin = 0, tMax = 1;
+            for (let i = 0; i < 4; i++) {
+                if (p[i] === 0) {
+                    if (q[i] < 0) return null; // parallel and outside
+                } else {
+                    const t = q[i] / p[i];
+                    if (p[i] < 0) { if (t > tMin) tMin = t; }
+                    else { if (t < tMax) tMax = t; }
+                }
+            }
+            if (tMin > tMax) return null;
+            return [
+                x0 + tMin * dx, y0 + tMin * dy,
+                x0 + tMax * dx, y0 + tMax * dy,
+            ];
+        };
+
+        const clipped = clipLine(idealTipX, idealTipY, idealButtX, idealButtY);
+        if (!clipped) {
+            // Entire cue is off-screen (shouldn't happen normally), skip drawing
+        } else {
+            const [drawTipX, drawTipY, drawButtX, drawButtY] = clipped;
+
+            // Cue shadow
+            ctx.strokeStyle = 'rgba(0, 0, 0, 0.3)';
+            ctx.lineWidth = 10;
+            ctx.lineCap = 'round';
+            ctx.beginPath();
+            ctx.moveTo(drawTipX + 2, drawTipY + 2);
+            ctx.lineTo(drawButtX + 2, drawButtY + 2);
+            ctx.stroke();
+
+            // Use ideal (unclipped) endpoints for gradient so colors stay consistent
+            const gradient = ctx.createLinearGradient(idealTipX, idealTipY, idealButtX, idealButtY);
+            gradient.addColorStop(0, '#e8d8b8');     // tip/ferrule - pale ivory
+            gradient.addColorStop(0.08, '#f5f0e0');   // ferrule end - white band
+            gradient.addColorStop(0.10, '#f0d898');    // shaft start - maple
+            gradient.addColorStop(0.60, '#c8962e');    // shaft - golden maple
+            gradient.addColorStop(0.65, '#1a1a1a');    // wrap start - dark leather
+            gradient.addColorStop(0.85, '#2a1a0a');    // wrap end - dark brown
+            gradient.addColorStop(0.87, '#4a2c17');    // butt start
+            gradient.addColorStop(1, '#1a0e08');       // butt end
+
+            ctx.strokeStyle = gradient;
+            ctx.lineWidth = 8;
+            ctx.beginPath();
+            ctx.moveTo(drawTipX, drawTipY);
+            ctx.lineTo(drawButtX, drawButtY);
+            ctx.stroke();
+
+            // Ferrule white band (only if tip is visible i.e. not clipped away)
+            const ferruleFrac = 0.08;
+            const ferruleX = idealTipX + cosA * idealCueLength * ferruleFrac;
+            const ferruleY = idealTipY + sinA * idealCueLength * ferruleFrac;
+            if (ferruleX > 0 && ferruleX < CANVAS_WIDTH && ferruleY > 0 && ferruleY < CANVAS_HEIGHT) {
+                ctx.strokeStyle = 'rgba(255, 255, 255, 0.8)';
+                ctx.lineWidth = 9;
+                ctx.beginPath();
+                ctx.moveTo(ferruleX - cosA * 3, ferruleY - sinA * 3);
+                ctx.lineTo(ferruleX + cosA * 3, ferruleY + sinA * 3);
+                ctx.stroke();
+            }
+
+            // Power glow on cue tip (only if tip is on-canvas)
+            if (idealTipX > -20 && idealTipX < CANVAS_WIDTH + 20 &&
+                idealTipY > -20 && idealTipY < CANVAS_HEIGHT + 20) {
+                const glowAlpha = aimPower * 0.6;
+                if (glowAlpha > 0.05) {
+                    const glowRadius = 8 + aimPower * 12;
+                    const glow = ctx.createRadialGradient(
+                        drawTipX, drawTipY, 2,
+                        drawTipX, drawTipY, glowRadius
+                    );
+                    glow.addColorStop(0, `rgba(100, 180, 255, ${glowAlpha})`);
+                    glow.addColorStop(1, 'rgba(100, 180, 255, 0)');
+                    ctx.beginPath();
+                    ctx.arc(drawTipX, drawTipY, glowRadius, 0, Math.PI * 2);
+                    ctx.fillStyle = glow;
+                    ctx.fill();
+                }
+
+                // Cue tip
+                ctx.fillStyle = '#4a90d9';
+                ctx.beginPath();
+                ctx.arc(drawTipX, drawTipY, 5, 0, Math.PI * 2);
+                ctx.fill();
+            }
+        }
     }, [tableState, isAiming, trajectoryLine, collision, aimAngle, aimPower]);
+
+    const drawImpactFlashes = useCallback((ctx: CanvasRenderingContext2D) => {
+        const now = performance.now();
+        const FLASH_DURATION = 150;
+        const toKeep: typeof impactFlashRef.current = [];
+
+        for (const flash of impactFlashRef.current) {
+            const elapsed = now - flash.startTime;
+            if (elapsed > FLASH_DURATION) continue;
+            toKeep.push(flash);
+
+            const t = elapsed / FLASH_DURATION;
+            const [fx, fy] = toCanvas(flash.x, flash.y);
+            const maxRadius = (flash.speed / 5) * 15 + 5;
+            const radius = maxRadius * t;
+            const alpha = (1 - t) * 0.6;
+
+            ctx.beginPath();
+            ctx.arc(fx, fy, radius, 0, Math.PI * 2);
+            ctx.fillStyle = `rgba(255, 255, 255, ${alpha})`;
+            ctx.fill();
+        }
+
+        impactFlashRef.current = toKeep;
+    }, []);
 
     const draw = useCallback(() => {
         const canvas = canvasRef.current;
@@ -451,19 +654,21 @@ export function GameCanvas({
         // Draw pocket animations (shrinking/fading)
         drawPocketAnimations(ctx);
 
+        // Draw impact flashes
+        drawImpactFlashes(ctx);
+
         // Draw aim line and cue if aiming
         drawAimLine(ctx);
-    }, [tableState, drawTable, drawBall, drawPocketAnimations, drawAimLine]);
+    }, [tableState, drawTable, drawBall, drawPocketAnimations, drawImpactFlashes, drawAimLine]);
 
     useEffect(() => {
         let animFrame: number;
-        const hasActiveAnims = pocketAnimRef.current.size > 0;
+        const hasActiveAnims = pocketAnimRef.current.size > 0 || impactFlashRef.current.length > 0;
 
         if (hasActiveAnims) {
-            // Keep re-drawing while pocket animations are active
             const loop = () => {
                 draw();
-                if (pocketAnimRef.current.size > 0) {
+                if (pocketAnimRef.current.size > 0 || impactFlashRef.current.length > 0) {
                     animFrame = requestAnimationFrame(loop);
                 }
             };
