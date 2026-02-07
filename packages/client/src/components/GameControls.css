@@ -27,43 +27,47 @@
     color: var(--text-muted);
 }
 
-/* Power Bar */
+/* Power Bar (horizontal) */
 .power-section {
-    min-width: 60px;
+    min-width: 200px;
+    flex: 1;
+    max-width: 280px;
 }
 
 .power-bar {
-    width: 40px;
-    height: 120px;
+    width: 100%;
+    height: 28px;
     background: var(--bg-primary);
-    border-radius: 8px;
+    border-radius: 14px;
     border: 2px solid rgba(255, 255, 255, 0.1);
     position: relative;
     cursor: pointer;
     overflow: hidden;
+    touch-action: none;
 }
 
 .power-fill {
     position: absolute;
-    bottom: 0;
+    top: 0;
     left: 0;
-    right: 0;
-    background: linear-gradient(to top,
+    bottom: 0;
+    background: linear-gradient(to right,
             #22c55e 0%,
             #eab308 50%,
             #ef4444 100%);
-    transition: height 0.1s ease;
+    border-radius: 14px 0 0 14px;
+    transition: width 0.05s ease;
 }
 
 .power-indicator {
     position: absolute;
-    left: -4px;
-    right: -4px;
-    height: 4px;
+    top: -4px;
+    bottom: -4px;
+    width: 4px;
     background: white;
     border-radius: 2px;
     box-shadow: 0 0 8px rgba(255, 255, 255, 0.5);
-    transform: translateY(50%);
+    transform: translateX(-50%);
 }
 
 .power-value {
@@ -131,53 +135,6 @@
     font-size: 1rem;
 }
 
-/* Spin Control */
-.spin-section {
-    min-width: 80px;
-}
-
-.spin-pad {
-    width: 80px;
-    height: 80px;
-    background: var(--bg-primary);
-    border-radius: 50%;
-    border: 2px solid rgba(255, 255, 255, 0.1);
-    position: relative;
-    cursor: crosshair;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-}
-
-.spin-ball {
-    width: 60px;
-    height: 60px;
-    background: linear-gradient(135deg, #ffffff 0%, #e0e0e0 100%);
-    border-radius: 50%;
-    position: relative;
-    box-shadow: inset 0 2px 4px rgba(0, 0, 0, 0.2);
-}
-
-.spin-dot {
-    position: absolute;
-    width: 12px;
-    height: 12px;
-    background: var(--accent-primary);
-    border-radius: 50%;
-    transform: translate(-50%, -50%);
-    box-shadow: 0 0 8px var(--accent-glow);
-    transition: all 0.05s ease;
-}
-
-.spin-labels {
-    display: flex;
-    justify-content: space-between;
-    width: 100%;
-    font-size: 0.875rem;
-    color: var(--text-muted);
-    padding: 0 0.25rem;
-}
-
 /* Responsive adjustments */
 @media (max-width: 600px) {
     .game-controls {
@@ -185,9 +142,12 @@
         padding: 0.75rem;
     }
 
+    .power-section {
+        min-width: 140px;
+    }
+
     .power-bar {
-        width: 30px;
-        height: 100px;
+        height: 24px;
     }
 
     .shoot-button {

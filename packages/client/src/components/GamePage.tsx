@@ -3,14 +3,97 @@
  * Main game screen integrating canvas, controls, and game logic
  */
 
-import { useState, useCallback, useEffect, useMemo, useRef } from 'react';
+import { useState, useCallback, useEffect, useMemo, useRef, MouseEvent as ReactMouseEvent, TouchEvent as ReactTouchEvent } from 'react';
 import { TableState, ShotParams, BallState, BallId, createInitialTableState, simulateShot, applyRules, isGroupCleared } from '@8ball/shared';
 import { BALL_COLORS, STRIPE_BALL_IDS } from '@8ball/shared';
 import { GameCanvas } from './GameCanvas';
 import { GameControls } from './GameControls';
 import { useAimSystem } from '../hooks/useAimSystem';
 import { useAnimationPlayback } from '../hooks/useAnimationPlayback';
+import { useSoundManager } from '../audio/useSoundManager';
 import './GamePage.css';
+
+// Spin control overlay component (positioned top-right of canvas like GamePigeon)
+function SpinOverlay({ spinX, spinY, onSpinChange }: {
+    spinX: number;
+    spinY: number;
+    onSpinChange: (x: number, y: number) => void;
+}) {
+    const [isDragging, setIsDragging] = useState(false);
+
+    const computeSpin = useCallback((el: HTMLElement, clientX: number, clientY: number) => {
+        const rect = el.getBoundingClientRect();
+        const x = Math.max(-1, Math.min(1, ((clientX - rect.left) / rect.width) * 2 - 1));
+        const y = Math.max(-1, Math.min(1, ((clientY - rect.top) / rect.height) * 2 - 1));
+        onSpinChange(x, y);
+    }, [onSpinChange]);
+
+    const handleMouseDown = useCallback((e: ReactMouseEvent<HTMLDivElement>) => {
+        setIsDragging(true);
+        computeSpin(e.currentTarget, e.clientX, e.clientY);
+    }, [computeSpin]);
+
+    const handleMouseMove = useCallback((e: ReactMouseEvent<HTMLDivElement>) => {
+        if (!isDragging) return;
+        computeSpin(e.currentTarget, e.clientX, e.clientY);
+    }, [isDragging, computeSpin]);
+
+    const handleMouseUp = useCallback(() => {
+        setIsDragging(false);
+    }, []);
+
+    const handleTouchStart = useCallback((e: ReactTouchEvent<HTMLDivElement>) => {
+        e.preventDefault();
+        e.stopPropagation();
+        setIsDragging(true);
+        computeSpin(e.currentTarget, e.touches[0].clientX, e.touches[0].clientY);
+    }, [computeSpin]);
+
+    const handleTouchMove = useCallback((e: ReactTouchEvent<HTMLDivElement>) => {
+        e.preventDefault();
+        e.stopPropagation();
+        if (!isDragging) return;
+        computeSpin(e.currentTarget, e.touches[0].clientX, e.touches[0].clientY);
+    }, [isDragging, computeSpin]);
+
+    const handleTouchEnd = useCallback((e: ReactTouchEvent<HTMLDivElement>) => {
+        e.preventDefault();
+        e.stopPropagation();
+        setIsDragging(false);
+    }, []);
+
+    return (
+        <div className="spin-overlay">
+            <div
+                className="spin-overlay-pad"
+                onMouseDown={handleMouseDown}
+                onMouseMove={handleMouseMove}
+                onMouseUp={handleMouseUp}
+                onMouseLeave={handleMouseUp}
+                onTouchStart={handleTouchStart}
+                onTouchMove={handleTouchMove}
+                onTouchEnd={handleTouchEnd}
+            >
+                <div className="spin-overlay-ball">
+                    <div
+                        className="spin-overlay-dot"
+                        style={{
+                            left: `${50 + spinX * 40}%`,
+                            top: `${50 + spinY * 40}%`,
+                        }}
+                    />
+                </div>
+            </div>
+            <button
+                className="spin-reset-btn"
+                onClick={() => onSpinChange(0, 0)}
+                onTouchEnd={(e) => { e.stopPropagation(); onSpinChange(0, 0); }}
+            >
+                Reset
+            </button>
+        </div>
+    );
+}
 
 interface PlayerInfo {
     seat: 1 | 2;
@@ -71,8 +154,11 @@ export function GamePage({
     const [calledPocket, setCalledPocket] = useState<number | null>(null);
     const [showCallPocket, setShowCallPocket] = useState(false);
 
+    // Sound manager
+    const { soundManager } = useSoundManager();
+
     // Animation playback hook (only used in dev/local mode)
-    const { isAnimating: localAnimating, animatedBalls: localAnimatedBalls, playAnimation } = useAnimationPlayback();
+    const { isAnimating: localAnimating, animatedBalls: localAnimatedBalls, playAnimation } = useAnimationPlayback(soundManager);
 
     // In multiplayer mode, animation is managed by GameRoom
     const isAnimating = isMultiplayer ? (externalAnimating || false) : localAnimating;
@@ -383,16 +469,22 @@ export function GamePage({
                     selectedPocket={calledPocket}
                     previousBalls={previousBalls}
                 />
+
+                {/* Spin Control Overlay (top-right of canvas) */}
+                {isMyTurn && !isPlacingBall && !isAnimating && (practiceMode || tableState.phase !== 'FINISHED') && (
+                    <SpinOverlay
+                        spinX={aimState.spinX}
+                        spinY={aimState.spinY}
+                        onSpinChange={setSpin}
+                    />
+                )}
             </div>
 
             {/* Game controls */}
             {isMyTurn && !isPlacingBall && !isAnimating && (practiceMode || tableState.phase !== 'FINISHED') && (
                 <GameControls
                     power={aimState.power}
-                    spinX={aimState.spinX}
-                    spinY={aimState.spinY}
                     onPowerChange={setPower}
-                    onSpinChange={setSpin}
                     onShoot={handleShoot}
                     canShoot={canShoot}
                     isSimulating={isSimulating}
