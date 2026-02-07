@@ -9,6 +9,7 @@ import {
     TableState,
     ShotParams,
     KeyFrame,
+    KeyFrameEvent,
     ShotSummary,
     FoulType,
 } from './types.js';
@@ -45,8 +46,9 @@ interface SimBall {
     pos: Vec2;
     vel: Vec2;
     inPlay: boolean;
-    spin: Vec2;       // spin X (side) and Y (follow/draw)
+    spin: Vec2;        // spin X (side) and Y (follow/draw)
     hasHitBall: boolean; // whether cue ball has made first contact
+    isRolling: boolean;  // true once ball transitions from sliding to rolling
 }
 
 // Minimum velocity to count a cushion hit as a real rail contact
@@ -55,6 +57,8 @@ const MIN_RAIL_VELOCITY = 0.1;
 // Spin effect strengths
 const SPIN_FOLLOW_DRAW = 0.35;  // how much follow/draw affects velocity after contact
 const SPIN_SIDE_CUSHION = 0.25; // how much side spin deflects on cushion rebound
+const SPIN_THROW = 0.04;        // throw deflection on ball-ball collision from cue spin
+const SPIN_DECAY = 0.98;        // spin decays per frame from cloth friction
 
 // ============================================
 // Main Simulation Function
@@ -72,6 +76,7 @@ export function simulateShot(
         inPlay: b.inPlay,
         spin: { x: 0, y: 0 },
         hasHitBall: false,
+        isRolling: false,
     }));
 
     // Find cue ball and apply initial velocity
@@ -80,8 +85,8 @@ export function simulateShot(
         throw new Error('Cue ball not in play');
     }
 
-    // Calculate initial velocity from shot params
-    const speed = shotParams.power * PHYSICS.POWER_TO_VELOCITY;
+    // Calculate initial velocity from shot params (non-linear power curve)
+    const speed = Math.pow(shotParams.power, PHYSICS.POWER_EXPONENT) * PHYSICS.POWER_TO_VELOCITY;
     cueBall.vel = {
         x: Math.cos(shotParams.angle) * speed,
         y: Math.sin(shotParams.angle) * speed,
@@ -103,6 +108,9 @@ export function simulateShot(
     // Keyframes for animation
     const keyframes: KeyFrame[] = [];
     let lastKeyframeTime = 0;
+
+    // Collect events between keyframes
+    let pendingEvents: KeyFrameEvent[] = [];
 
     // Fixed timestep simulation
     let time = 0;
@@ -128,19 +136,45 @@ export function simulateShot(
 
         // Record keyframe at intervals
         if ((time - lastKeyframeTime) * 1000 >= PHYSICS.KEYFRAME_INTERVAL) {
-            keyframes.push(createKeyframe(time * 1000, balls));
+            const kf = createKeyframe(time * 1000, balls);
+            if (pendingEvents.length > 0) {
+                kf.events = pendingEvents;
+                pendingEvents = [];
+            }
+            keyframes.push(kf);
             lastKeyframeTime = time;
         }
 
-        // Integrate positions
+        // Integrate positions + physics-based friction
         for (const ball of balls) {
             if (!ball.inPlay) continue;
 
             // Update position
             ball.pos = vec2Add(ball.pos, vec2Scale(ball.vel, dt));
 
-            // Apply friction
-            ball.vel = vec2Scale(ball.vel, PHYSICS.FRICTION);
+            // Physics-based deceleration (sliding vs rolling friction)
+            const ballSpeed = vec2Length(ball.vel);
+            if (ballSpeed > PHYSICS.MIN_VELOCITY) {
+                // Transition to rolling when speed drops below threshold
+                if (!ball.isRolling && ballSpeed < PHYSICS.ROLLING_TRANSITION_SPEED) {
+                    ball.isRolling = true;
+                }
+
+                const frictionCoeff = ball.isRolling
+                    ? PHYSICS.ROLLING_FRICTION_COEFF
+                    : PHYSICS.SLIDING_FRICTION_COEFF;
+                const decel = frictionCoeff * PHYSICS.GRAVITY * dt;
+
+                const newSpeed = Math.max(0, ballSpeed - decel);
+                if (newSpeed === 0) {
+                    ball.vel = vec2(0, 0);
+                } else {
+                    ball.vel = vec2Scale(ball.vel, newSpeed / ballSpeed);
+                }
+
+                // Spin decay from cloth friction
+                ball.spin = vec2Scale(ball.spin, SPIN_DECAY);
+            }
 
             // Stop very slow balls
             if (vec2LengthSq(ball.vel) < PHYSICS.MIN_VELOCITY * PHYSICS.MIN_VELOCITY) {
@@ -158,7 +192,29 @@ export function simulateShot(
 
                 const collision = checkBallBallCollision(b1, b2);
                 if (collision) {
+                    const impactSpeed = vec2Length(vec2Sub(b1.vel, b2.vel));
+                    const contactPos = {
+                        x: (b1.pos.x + b2.pos.x) / 2,
+                        y: (b1.pos.y + b2.pos.y) / 2,
+                    };
+
                     resolveBallBallCollision(b1, b2);
+
+                    // Apply throw effect: cue ball spin deflects object ball
+                    if (b1.id === 'cue' || b2.id === 'cue') {
+                        const cue = b1.id === 'cue' ? b1 : b2;
+                        const obj = b1.id === 'cue' ? b2 : b1;
+                        applyThrowEffect(cue, obj);
+                    }
+
+                    // Emit ball_ball event
+                    pendingEvents.push({
+                        type: 'ball_ball',
+                        ballId: b1.id,
+                        otherBallId: b2.id,
+                        speed: impactSpeed,
+                        pos: contactPos,
+                    });
 
                     // Track first contact (for fouls)
                     if (firstContact === null) {
@@ -181,38 +237,65 @@ export function simulateShot(
             }
         }
 
-        // Handle ball-cushion collisions
+        // Handle pocket gravity well + pocketing BEFORE cushion collisions
+        // (real tables have no cushion where pockets are — must check pockets first)
         for (const ball of balls) {
             if (!ball.inPlay) continue;
 
-            const cushionHit = handleCushionCollision(ball);
-            if (cushionHit) {
-                // Only count as rail contact if ball has meaningful velocity
-                if (vec2Length(ball.vel) > MIN_RAIL_VELOCITY && firstContact !== null) {
-                    railAfterContact = true;
-                }
-            }
-        }
-
-        // Handle ball-pocket detection
-        for (const ball of balls) {
-            if (!ball.inPlay) continue;
-
-            const pocketIdx = getBallPocketIndex(ball.pos);
-            if (pocketIdx >= 0) {
+            const pocketResult = handlePocketGravity(ball);
+            if (pocketResult >= 0) {
+                // Ball pocketed
                 ball.inPlay = false;
+                ball.vel = vec2(0, 0);
                 pocketedBalls.push(ball.id);
-                pocketIndices.set(ball.id, pocketIdx);
+                pocketIndices.set(ball.id, pocketResult);
+
+                // Emit ball_pocket event
+                pendingEvents.push({
+                    type: 'ball_pocket',
+                    ballId: ball.id,
+                    speed: vec2Length(ball.vel),
+                    pos: { x: POCKETS[pocketResult].x, y: POCKETS[pocketResult].y },
+                });
 
                 if (ball.id === 'cue') {
                     scratch = true;
                 }
             }
         }
+
+        // Handle ball-cushion collisions (skip balls near pocket openings)
+        for (const ball of balls) {
+            if (!ball.inPlay) continue;
+
+            const cushionSpeed = vec2Length(ball.vel);
+            const cushionHit = handleCushionCollision(ball);
+            if (cushionHit) {
+                // Cushion impact disrupts roll — re-enter sliding friction
+                ball.isRolling = false;
+
+                // Emit ball_cushion event
+                pendingEvents.push({
+                    type: 'ball_cushion',
+                    ballId: ball.id,
+                    speed: cushionSpeed,
+                    pos: { x: ball.pos.x, y: ball.pos.y },
+                });
+
+                // Only count as rail contact if ball has meaningful velocity
+                if (cushionSpeed > MIN_RAIL_VELOCITY && firstContact !== null) {
+                    railAfterContact = true;
+                }
+            }
+        }
     }
 
     // Add final keyframe
-    keyframes.push(createKeyframe(time * 1000, balls));
+    const finalKf = createKeyframe(time * 1000, balls);
+    if (pendingEvents.length > 0) {
+        finalKf.events = pendingEvents;
+    }
+    keyframes.push(finalKf);
 
     // Build final table state
     const finalState = buildFinalState(tableState, balls, pocketedBalls);
@@ -254,6 +337,20 @@ function applyFollowDrawSpin(cueBall: SimBall): void {
     cueBall.vel = vec2Add(cueBall.vel, vec2Scale(dir, adjustment));
 }
 
+function applyThrowEffect(cueBall: SimBall, objectBall: SimBall): void {
+    const spinX = cueBall.spin.x;
+    if (Math.abs(spinX) < 0.01) return;
+
+    const objSpeed = vec2Length(objectBall.vel);
+    if (objSpeed < 0.01) return;
+
+    // Deflect object ball perpendicular to its travel direction
+    const dir = vec2Normalize(objectBall.vel);
+    const tangent = { x: -dir.y, y: dir.x };
+    const deflection = objSpeed * spinX * SPIN_THROW;
+    objectBall.vel = vec2Add(objectBall.vel, vec2Scale(tangent, deflection));
+}
+
 // ============================================
 // Collision Detection & Resolution
 // ============================================
@@ -288,6 +385,29 @@ function resolveBallBallCollision(b1: SimBall, b2: SimBall): void {
     }
 }
 
+/**
+ * Check if a ball is near a pocket opening on a given cushion side.
+ * Real tables have no cushion where pockets are — there's a gap.
+ */
+function isInPocketZone(ball: SimBall, cushion: 'left' | 'right' | 'top' | 'bottom'): boolean {
+    const mouthR = PHYSICS.POCKET_MOUTH_RADIUS;
+    const c = TABLE.CUSHION;
+
+    for (const pocket of POCKETS) {
+        const dist = vec2Distance(ball.pos, pocket);
+        if (dist > mouthR) continue;
+
+        // Check if this pocket is on the specified cushion wall
+        switch (cushion) {
+            case 'left':   if (pocket.x <= c + 0.01) return true; break;
+            case 'right':  if (pocket.x >= TABLE.WIDTH - c - 0.01) return true; break;
+            case 'top':    if (pocket.y <= c + 0.01) return true; break;
+            case 'bottom': if (pocket.y >= TABLE.HEIGHT - c - 0.01) return true; break;
+        }
+    }
+    return false;
+}
+
 function handleCushionCollision(ball: SimBall): boolean {
     const r = TABLE.BALL_RADIUS;
     const cushion = TABLE.CUSHION;
@@ -295,7 +415,7 @@ function handleCushionCollision(ball: SimBall): boolean {
     const isCue = ball.id === 'cue';
 
     // Left cushion
-    if (ball.pos.x - r < cushion) {
+    if (ball.pos.x - r < cushion && !isInPocketZone(ball, 'left')) {
         ball.pos.x = cushion + r;
         ball.vel.x = -ball.vel.x * PHYSICS.CUSHION_RESTITUTION;
         if (isCue) applySideSpinOnCushion(ball, 'y');
@@ -303,7 +423,7 @@ function handleCushionCollision(ball: SimBall): boolean {
     }
 
     // Right cushion
-    if (ball.pos.x + r > TABLE.WIDTH - cushion) {
+    if (ball.pos.x + r > TABLE.WIDTH - cushion && !isInPocketZone(ball, 'right')) {
         ball.pos.x = TABLE.WIDTH - cushion - r;
         ball.vel.x = -ball.vel.x * PHYSICS.CUSHION_RESTITUTION;
         if (isCue) applySideSpinOnCushion(ball, 'y');
@@ -311,7 +431,7 @@ function handleCushionCollision(ball: SimBall): boolean {
     }
 
     // Top cushion
-    if (ball.pos.y - r < cushion) {
+    if (ball.pos.y - r < cushion && !isInPocketZone(ball, 'top')) {
         ball.pos.y = cushion + r;
         ball.vel.y = -ball.vel.y * PHYSICS.CUSHION_RESTITUTION;
         if (isCue) applySideSpinOnCushion(ball, 'x');
@@ -319,7 +439,7 @@ function handleCushionCollision(ball: SimBall): boolean {
     }
 
     // Bottom cushion
-    if (ball.pos.y + r > TABLE.HEIGHT - cushion) {
+    if (ball.pos.y + r > TABLE.HEIGHT - cushion && !isInPocketZone(ball, 'bottom')) {
         ball.pos.y = TABLE.HEIGHT - cushion - r;
         ball.vel.y = -ball.vel.y * PHYSICS.CUSHION_RESTITUTION;
         if (isCue) applySideSpinOnCushion(ball, 'x');
@@ -343,6 +463,44 @@ function applySideSpinOnCushion(ball: SimBall, axis: 'x' | 'y'): void {
     }
 }
 
+// ============================================
+// Pocket Gravity Well
+// ============================================
+
+/**
+ * Two-radius pocket detection:
+ * - Mouth radius: ball gets pulled toward pocket center
+ * - Commit radius: ball is definitely pocketed
+ * Returns pocket index if pocketed, -1 otherwise
+ */
+function handlePocketGravity(ball: SimBall): number {
+    const dt = PHYSICS.TIME_STEP;
+
+    for (let i = 0; i < POCKETS.length; i++) {
+        const pocket = POCKETS[i];
+        const dx = pocket.x - ball.pos.x;
+        const dy = pocket.y - ball.pos.y;
+        const dist = Math.sqrt(dx * dx + dy * dy);
+
+        // Commit radius — ball is pocketed
+        if (dist < PHYSICS.POCKET_COMMIT_RADIUS) {
+            return i;
+        }
+
+        // Mouth radius — apply gravity pull toward pocket center
+        if (dist < PHYSICS.POCKET_MOUTH_RADIUS) {
+            // Pull strength increases as ball gets closer to center
+            const normalizedDist = dist / PHYSICS.POCKET_MOUTH_RADIUS;
+            const pullStrength = PHYSICS.POCKET_PULL_STRENGTH * (1 - normalizedDist);
+            const pullDir = { x: dx / dist, y: dy / dist };
+            ball.vel = vec2Add(ball.vel, vec2Scale(pullDir, pullStrength * dt));
+        }
+    }
+
+    return -1;
+}
+
+/** Legacy helper — check if ball center is in any pocket (used by aim system) */
 export function getBallPocketIndex(pos: Vec2): number {
     for (let i = 0; i < POCKETS.length; i++) {
         const dist = vec2Distance(pos, POCKETS[i]);

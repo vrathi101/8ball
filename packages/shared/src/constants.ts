@@ -46,19 +46,31 @@ export const PHYSICS = {
     KEYFRAME_INTERVAL: 33,        // Keyframe every 33ms (~30fps)
 
     // Ball physics
-    FRICTION: 0.985,              // Linear friction per frame
+    FRICTION: 0.985,              // Legacy (unused) - kept for reference
     CUSHION_RESTITUTION: 0.8,     // Energy retained on cushion bounce
     BALL_RESTITUTION: 0.95,       // Energy retained on ball-ball collision
 
+    // Sliding → Rolling friction model
+    SLIDING_FRICTION_COEFF: 0.2,  // Cloth friction while ball slides
+    ROLLING_FRICTION_COEFF: 0.015, // Cloth friction once ball rolls (upper end of real range)
+    GRAVITY: 9.81,                // m/s²
+    ROLLING_TRANSITION_SPEED: 0.5,// Speed below which ball transitions to rolling
+
     // Velocity thresholds
-    MIN_VELOCITY: 0.001,          // Below this, ball is considered stopped
-    MAX_VELOCITY: 10.0,           // Maximum initial velocity (power = 1)
+    MIN_VELOCITY: 0.008,          // Below this, ball is considered stopped (raised to prevent micro-drift)
+    MAX_VELOCITY: 12.0,           // Maximum initial velocity (power = 1)
 
     // Shot power mapping
-    POWER_TO_VELOCITY: 8.0,       // power * this = initial velocity
+    POWER_TO_VELOCITY: 8.0,       // power^POWER_EXPONENT * this = initial velocity
+    POWER_EXPONENT: 1.3,          // Non-linear power curve for fine control at low end
+
+    // Pocket gravity well
+    POCKET_MOUTH_RADIUS: 0.06,    // Outer zone — ball gets pulled toward pocket center (~2.1 ball diameters)
+    POCKET_COMMIT_RADIUS: 0.038,  // Inner zone — ball is definitely pocketed
+    POCKET_PULL_STRENGTH: 5.0,    // m/s² gravitational pull toward pocket center
 
     // Simulation limits
-    MAX_FRAMES: 50000,            // Safety limit (~3.5 min at 240fps)
+    MAX_FRAMES: 30000,            // Safety limit (~2 min at 240fps)
     SETTLE_FRAMES: 10,            // Frames all balls must be stopped before ending
 } as const;
 

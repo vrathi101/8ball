@@ -247,6 +247,14 @@ export type WsServerMessage =
 // Animation Types
 // ============================================
 
+export interface KeyFrameEvent {
+    type: 'ball_ball' | 'ball_cushion' | 'ball_pocket';
+    ballId: BallId;
+    otherBallId?: BallId;
+    speed: number;   // impact speed → maps to volume
+    pos: Vec2;        // collision position
+}
+
 export interface KeyFrame {
     time: number;  // ms from shot start
     balls: Array<{
@@ -254,4 +262,5 @@ export interface KeyFrame {
         pos: Vec2;
         inPlay: boolean;
     }>;
+    events?: KeyFrameEvent[];
 }
