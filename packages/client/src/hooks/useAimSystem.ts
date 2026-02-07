@@ -44,7 +44,7 @@ export function useAimSystem(tableState: TableState | null, isMyTurn: boolean) {
         return tableState?.balls.find(b => b.id === 'cue' && b.inPlay);
     }, [tableState]);
 
-    // Calculate trajectory line and first collision (with cushion bounce reflection)
+    // Easy mode trajectory: single segment to first ball or cushion contact
     const trajectoryPreview = useMemo(() => {
         if (!cueBall || !tableState) {
             return { line: [], collision: null };
@@ -58,107 +58,72 @@ export function useAimSystem(tableState: TableState | null, isMyTurn: boolean) {
         const minY = cushion + ballRadius;
         const maxY = TABLE.HEIGHT - cushion - ballRadius;
 
-        let posX = cueBall.pos.x;
-        let posY = cueBall.pos.y;
-        let dirX = Math.cos(aimState.angle);
-        let dirY = Math.sin(aimState.angle);
+        const dirX = Math.cos(aimState.angle);
+        const dirY = Math.sin(aimState.angle);
+        const maxDist = 2.5;
+        const stepSize = 0.005;
 
-        const maxTotalDist = 2.5; // total ray length across bounces
-        let remainingDist = maxTotalDist;
-        let collision: CollisionPreview = { type: 'none', point: { x: posX, y: posY } };
-        const MAX_BOUNCES = 3;
-        let bounceCount = 0;
+        for (let dist = stepSize; dist <= maxDist; dist += stepSize) {
+            const nextX = cueBall.pos.x + dirX * dist;
+            const nextY = cueBall.pos.y + dirY * dist;
 
-        while (remainingDist > 0 && bounceCount <= MAX_BOUNCES) {
-            const stepSize = 0.01;
+            // First object-ball collision
+            for (const ball of tableState.balls) {
+                if (ball.id === 'cue' || !ball.inPlay) continue;
 
-            for (let dist = 0; dist < remainingDist; dist += stepSize) {
-                const nextX = posX + dirX * dist;
-                const nextY = posY + dirY * dist;
+                const dx = nextX - ball.pos.x;
+                const dy = nextY - ball.pos.y;
+                const distSq = dx * dx + dy * dy;
 
-                // Check ball collision (only on first segment before any cushion bounce)
-                if (bounceCount === 0) {
-                    for (const ball of tableState.balls) {
-                        if (ball.id === 'cue' || !ball.inPlay) continue;
+                if (distSq < (ballRadius * 2) ** 2) {
+                    const d = Math.sqrt(distSq);
+                    const overlap = ballRadius * 2 - d;
+                    const ghostPos = {
+                        x: nextX - dirX * overlap,
+                        y: nextY - dirY * overlap,
+                    };
 
-                        const dx = nextX - ball.pos.x;
-                        const dy = nextY - ball.pos.y;
-                        const distSq = dx * dx + dy * dy;
+                    const contactNormal = {
+                        x: (ball.pos.x - ghostPos.x) / (ballRadius * 2),
+                        y: (ball.pos.y - ghostPos.y) / (ballRadius * 2),
+                    };
 
-                        if (distSq < (ballRadius * 2) ** 2) {
-                            const d = Math.sqrt(distSq);
-                            const overlap = ballRadius * 2 - d;
-                            const ghostPos = {
-                                x: nextX - dirX * overlap,
-                                y: nextY - dirY * overlap,
-                            };
-
-                            const contactNormal = {
-                                x: (ball.pos.x - ghostPos.x) / (ballRadius * 2),
-                                y: (ball.pos.y - ghostPos.y) / (ballRadius * 2),
-                            };
-
-                            const objAngle = Math.atan2(contactNormal.y, contactNormal.x);
-                            const tangentX = -contactNormal.y;
-                            const tangentY = contactNormal.x;
-                            const dotWithIncoming = tangentX * dirX + tangentY * dirY;
-                            const cueDeflectX = dotWithIncoming >= 0 ? tangentX : -tangentX;
-                            const cueDeflectY = dotWithIncoming >= 0 ? tangentY : -tangentY;
-                            const cueDeflectionAngle = Math.atan2(cueDeflectY, cueDeflectX);
-
-                            collision = {
-                                type: 'ball',
-                                point: ghostPos,
-                                targetBall: ball,
-                                reflectAngle: objAngle,
-                                cueDeflectionAngle,
-                            };
-
-                            line.push({ x: ghostPos.x, y: ghostPos.y });
-                            return { line, collision };
-                        }
-                    }
+                    line.push({ x: ghostPos.x, y: ghostPos.y });
+                    const collision: CollisionPreview = {
+                        type: 'ball',
+                        point: ghostPos,
+                        targetBall: ball,
+                        reflectAngle: Math.atan2(contactNormal.y, contactNormal.x),
+                    };
+                    return { line, collision };
                 }
+            }
 
-                // Check cushion collision
-                let hitCushion = false;
-                let cushionX = nextX;
-                let cushionY = nextY;
-
-                if (nextX < minX) { cushionX = minX; hitCushion = true; }
-                if (nextX > maxX) { cushionX = maxX; hitCushion = true; }
-                if (nextY < minY) { cushionY = minY; hitCushion = true; }
-                if (nextY > maxY) { cushionY = maxY; hitCushion = true; }
-
-                if (hitCushion) {
-                    line.push({ x: cushionX, y: cushionY });
-                    collision = { type: 'cushion', point: { x: cushionX, y: cushionY } };
-
-                    // Reflect direction off cushion and continue
-                    if (nextX < minX || nextX > maxX) dirX = -dirX;
-                    if (nextY < minY || nextY > maxY) dirY = -dirY;
-
-                    posX = cushionX;
-                    posY = cushionY;
-                    remainingDist -= dist;
-                    bounceCount++;
-                    break; // restart inner loop from new position
-                }
-
-                // Sample points for the line
-                if (dist === 0 || dist % 0.05 < stepSize) {
-                    line.push({ x: nextX, y: nextY });
-                }
-
-                // If we've exhausted distance in this segment
-                if (dist + stepSize >= remainingDist) {
-                    line.push({ x: nextX, y: nextY });
-                    remainingDist = 0;
-                    break;
-                }
+            // First cushion collision (no bounce continuation in easy mode)
+            if (nextX < minX || nextX > maxX || nextY < minY || nextY > maxY) {
+                const cushionX = Math.max(minX, Math.min(maxX, nextX));
+                const cushionY = Math.max(minY, Math.min(maxY, nextY));
+                line.push({ x: cushionX, y: cushionY });
+                const collision: CollisionPreview = {
+                    type: 'cushion',
+                    point: { x: cushionX, y: cushionY },
+                };
+                return {
+                    line,
+                    collision,
+                };
             }
         }
 
+        const endPoint = {
+            x: cueBall.pos.x + dirX * maxDist,
+            y: cueBall.pos.y + dirY * maxDist,
+        };
+        line.push(endPoint);
+        const collision: CollisionPreview = {
+            type: 'none',
+            point: endPoint,
+        };
         return { line, collision };
     }, [cueBall, tableState, aimState.angle]);
 

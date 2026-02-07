@@ -471,9 +471,9 @@ export function GameCanvas({
         const [startX, startY] = toCanvas(cueBall.pos.x, cueBall.pos.y);
 
         // Draw main trajectory line
-        ctx.strokeStyle = 'rgba(255, 255, 255, 0.6)';
-        ctx.lineWidth = 2;
-        ctx.setLineDash([10, 5]);
+        ctx.strokeStyle = 'rgba(255, 255, 255, 0.82)';
+        ctx.lineWidth = 2.5;
+        ctx.setLineDash([]);
         ctx.beginPath();
         ctx.moveTo(startX, startY);
 
@@ -482,7 +482,6 @@ export function GameCanvas({
             ctx.lineTo(px, py);
         }
         ctx.stroke();
-        ctx.setLineDash([]);
 
         // Draw ghost ball at collision point
         if (collision && collision.type === 'ball') {
@@ -500,34 +499,17 @@ export function GameCanvas({
 
             // Draw predicted object ball path
             if (collision.reflectAngle !== undefined && collision.targetBall) {
-                const objectBallPathLength = 0.3; // 30cm
+                const objectBallPathLength = 0.24;
                 const [objX, objY] = toCanvas(collision.targetBall.pos.x, collision.targetBall.pos.y);
                 const endX = objX + Math.cos(collision.reflectAngle) * objectBallPathLength * SCALE;
                 const endY = objY + Math.sin(collision.reflectAngle) * objectBallPathLength * SCALE;
 
-                ctx.strokeStyle = 'rgba(255, 200, 50, 0.6)';
-                ctx.lineWidth = 2;
+                ctx.strokeStyle = 'rgba(255, 212, 94, 0.85)';
+                ctx.lineWidth = 2.2;
                 ctx.setLineDash([6, 4]);
                 ctx.beginPath();
                 ctx.moveTo(objX, objY);
                 ctx.lineTo(endX, endY);
-                ctx.stroke();
-                ctx.setLineDash([]);
-            }
-
-            // Draw cue ball deflection path (position play guide)
-            if (collision.cueDeflectionAngle !== undefined) {
-                const deflectLength = 0.5 * SCALE; // 50cm
-                const [ghostX2, ghostY2] = toCanvas(collision.point.x, collision.point.y);
-                const deflEndX = ghostX2 + Math.cos(collision.cueDeflectionAngle) * deflectLength;
-                const deflEndY = ghostY2 + Math.sin(collision.cueDeflectionAngle) * deflectLength;
-
-                ctx.strokeStyle = 'rgba(150, 200, 255, 0.3)';
-                ctx.lineWidth = 1.5;
-                ctx.setLineDash([4, 6]);
-                ctx.beginPath();
-                ctx.moveTo(ghostX2, ghostY2);
-                ctx.lineTo(deflEndX, deflEndY);
                 ctx.stroke();
                 ctx.setLineDash([]);
             }
