@@ -26,6 +26,7 @@ interface CollisionPreview {
     point: Vec2;
     targetBall?: BallState;
     reflectAngle?: number;
+    cueDeflectionAngle?: number;
 }
 
 export function useAimSystem(tableState: TableState | null, isMyTurn: boolean) {
@@ -43,101 +44,121 @@ export function useAimSystem(tableState: TableState | null, isMyTurn: boolean) {
         return tableState?.balls.find(b => b.id === 'cue' && b.inPlay);
     }, [tableState]);
 
-    // Calculate trajectory line and first collision
+    // Calculate trajectory line and first collision (with cushion bounce reflection)
     const trajectoryPreview = useMemo(() => {
         if (!cueBall || !tableState) {
             return { line: [], collision: null };
         }
 
         const line: TrajectoryPoint[] = [];
-        const start = cueBall.pos;
-        const direction = {
-            x: Math.cos(aimState.angle),
-            y: Math.sin(aimState.angle),
-        };
-
-        // Extend line until we hit something or reach max length
-        const maxLength = 2.0; // 2 meters - full table length
-        const stepSize = 0.01;
         const ballRadius = TABLE.BALL_RADIUS;
         const cushion = TABLE.CUSHION;
+        const minX = cushion + ballRadius;
+        const maxX = TABLE.WIDTH - cushion - ballRadius;
+        const minY = cushion + ballRadius;
+        const maxY = TABLE.HEIGHT - cushion - ballRadius;
 
-        let currentPos = { ...start };
-        let collision: CollisionPreview = { type: 'none', point: start };
+        let posX = cueBall.pos.x;
+        let posY = cueBall.pos.y;
+        let dirX = Math.cos(aimState.angle);
+        let dirY = Math.sin(aimState.angle);
 
-        for (let dist = 0; dist < maxLength; dist += stepSize) {
-            const nextPos = {
-                x: start.x + direction.x * dist,
-                y: start.y + direction.y * dist,
-            };
+        const maxTotalDist = 2.5; // total ray length across bounces
+        let remainingDist = maxTotalDist;
+        let collision: CollisionPreview = { type: 'none', point: { x: posX, y: posY } };
+        const MAX_BOUNCES = 3;
+        let bounceCount = 0;
 
-            // Check if we hit a ball (ghost ball preview)
-            for (const ball of tableState.balls) {
-                if (ball.id === 'cue' || !ball.inPlay) continue;
+        while (remainingDist > 0 && bounceCount <= MAX_BOUNCES) {
+            const stepSize = 0.01;
 
-                const dx = nextPos.x - ball.pos.x;
-                const dy = nextPos.y - ball.pos.y;
-                const distSq = dx * dx + dy * dy;
+            for (let dist = 0; dist < remainingDist; dist += stepSize) {
+                const nextX = posX + dirX * dist;
+                const nextY = posY + dirY * dist;
 
-                if (distSq < (ballRadius * 2) ** 2) {
-                    // Found collision - position ghost ball
-                    const dist = Math.sqrt(distSq);
-                    const overlap = ballRadius * 2 - dist;
-                    const ghostPos = {
-                        x: nextPos.x - direction.x * overlap,
-                        y: nextPos.y - direction.y * overlap,
-                    };
+                // Check ball collision (only on first segment before any cushion bounce)
+                if (bounceCount === 0) {
+                    for (const ball of tableState.balls) {
+                        if (ball.id === 'cue' || !ball.inPlay) continue;
 
-                    // Calculate reflect direction for object ball
-                    const contactNormal = {
-                        x: (ball.pos.x - ghostPos.x) / (ballRadius * 2),
-                        y: (ball.pos.y - ghostPos.y) / (ballRadius * 2),
-                    };
+                        const dx = nextX - ball.pos.x;
+                        const dy = nextY - ball.pos.y;
+                        const distSq = dx * dx + dy * dy;
 
-                    collision = {
-                        type: 'ball',
-                        point: ghostPos,
-                        targetBall: ball,
-                        reflectAngle: Math.atan2(contactNormal.y, contactNormal.x),
-                    };
+                        if (distSq < (ballRadius * 2) ** 2) {
+                            const d = Math.sqrt(distSq);
+                            const overlap = ballRadius * 2 - d;
+                            const ghostPos = {
+                                x: nextX - dirX * overlap,
+                                y: nextY - dirY * overlap,
+                            };
 
-                    // Add points up to collision
-                    line.push({ x: ghostPos.x, y: ghostPos.y });
-                    return { line, collision };
+                            const contactNormal = {
+                                x: (ball.pos.x - ghostPos.x) / (ballRadius * 2),
+                                y: (ball.pos.y - ghostPos.y) / (ballRadius * 2),
+                            };
+
+                            const objAngle = Math.atan2(contactNormal.y, contactNormal.x);
+                            const tangentX = -contactNormal.y;
+                            const tangentY = contactNormal.x;
+                            const dotWithIncoming = tangentX * dirX + tangentY * dirY;
+                            const cueDeflectX = dotWithIncoming >= 0 ? tangentX : -tangentX;
+                            const cueDeflectY = dotWithIncoming >= 0 ? tangentY : -tangentY;
+                            const cueDeflectionAngle = Math.atan2(cueDeflectY, cueDeflectX);
+
+                            collision = {
+                                type: 'ball',
+                                point: ghostPos,
+                                targetBall: ball,
+                                reflectAngle: objAngle,
+                                cueDeflectionAngle,
+                            };
+
+                            line.push({ x: ghostPos.x, y: ghostPos.y });
+                            return { line, collision };
+                        }
+                    }
                 }
-            }
 
-            // Check cushion collision
-            if (nextPos.x - ballRadius < cushion) {
-                collision = { type: 'cushion', point: { x: cushion + ballRadius, y: nextPos.y } };
-                line.push(collision.point);
-                return { line, collision };
-            }
-            if (nextPos.x + ballRadius > TABLE.WIDTH - cushion) {
-                collision = { type: 'cushion', point: { x: TABLE.WIDTH - cushion - ballRadius, y: nextPos.y } };
-                line.push(collision.point);
-                return { line, collision };
-            }
-            if (nextPos.y - ballRadius < cushion) {
-                collision = { type: 'cushion', point: { x: nextPos.x, y: cushion + ballRadius } };
-                line.push(collision.point);
-                return { line, collision };
-            }
-            if (nextPos.y + ballRadius > TABLE.HEIGHT - cushion) {
-                collision = { type: 'cushion', point: { x: nextPos.x, y: TABLE.HEIGHT - cushion - ballRadius } };
-                line.push(collision.point);
-                return { line, collision };
-            }
+                // Check cushion collision
+                let hitCushion = false;
+                let cushionX = nextX;
+                let cushionY = nextY;
 
-            currentPos = nextPos;
+                if (nextX < minX) { cushionX = minX; hitCushion = true; }
+                if (nextX > maxX) { cushionX = maxX; hitCushion = true; }
+                if (nextY < minY) { cushionY = minY; hitCushion = true; }
+                if (nextY > maxY) { cushionY = maxY; hitCushion = true; }
 
-            // Sample points for the line (every few steps)
-            if (dist === 0 || dist % 0.05 < stepSize) {
-                line.push({ x: currentPos.x, y: currentPos.y });
+                if (hitCushion) {
+                    line.push({ x: cushionX, y: cushionY });
+                    collision = { type: 'cushion', point: { x: cushionX, y: cushionY } };
+
+                    // Reflect direction off cushion and continue
+                    if (nextX < minX || nextX > maxX) dirX = -dirX;
+                    if (nextY < minY || nextY > maxY) dirY = -dirY;
+
+                    posX = cushionX;
+                    posY = cushionY;
+                    remainingDist -= dist;
+                    bounceCount++;
+                    break; // restart inner loop from new position
+                }
+
+                // Sample points for the line
+                if (dist === 0 || dist % 0.05 < stepSize) {
+                    line.push({ x: nextX, y: nextY });
+                }
+
+                // If we've exhausted distance in this segment
+                if (dist + stepSize >= remainingDist) {
+                    line.push({ x: nextX, y: nextY });
+                    remainingDist = 0;
+                    break;
+                }
             }
         }
 
-        line.push({ x: currentPos.x, y: currentPos.y });
         return { line, collision };
     }, [cueBall, tableState, aimState.angle]);
 
@@ -157,8 +178,28 @@ export function useAimSystem(tableState: TableState | null, isMyTurn: boolean) {
 
         setAimState(prev => {
             if (prev.isDragging) {
-                // Point cue stick opposite to drag direction
-                const angle = Math.atan2(tableY - cueBall.pos.y, tableX - cueBall.pos.x) + Math.PI;
+                // Two-zone sensitivity: fine near ball, coarse far away
+                const dx = tableX - cueBall.pos.x;
+                const dy = tableY - cueBall.pos.y;
+                const dist = Math.sqrt(dx * dx + dy * dy);
+
+                // Sensitivity: 0.4x when close (<0.15m), 1.0x when far (>0.3m), lerp between
+                const CLOSE_DIST = 0.15;
+                const FAR_DIST = 0.3;
+                const MIN_SENSITIVITY = 0.4;
+                const t = Math.max(0, Math.min(1, (dist - CLOSE_DIST) / (FAR_DIST - CLOSE_DIST)));
+                const sensitivity = MIN_SENSITIVITY + t * (1 - MIN_SENSITIVITY);
+
+                // Target angle from drag position
+                const targetAngle = Math.atan2(dy, dx) + Math.PI;
+
+                // Interpolate from current angle toward target using sensitivity
+                let angleDelta = targetAngle - prev.angle;
+                // Normalize to [-PI, PI]
+                while (angleDelta > Math.PI) angleDelta -= 2 * Math.PI;
+                while (angleDelta < -Math.PI) angleDelta += 2 * Math.PI;
+
+                const angle = prev.angle + angleDelta * sensitivity;
                 return { ...prev, angle };
             }
             if (prev.isPowerDrag) {
