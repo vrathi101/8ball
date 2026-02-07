@@ -3,7 +3,7 @@
  * Renders the pool table, balls, aim line, ghost ball preview, and pocket highlights
  */
 
-import { useRef, useEffect, useCallback } from 'react';
+import { useRef, useEffect, useCallback, type CSSProperties } from 'react';
 import { TableState, BallState, Vec2, KeyFrameEvent } from '@8ball/shared';
 import { TABLE, POCKETS, BALL_COLORS, STRIPE_BALL_IDS } from '@8ball/shared';
 
@@ -40,17 +40,24 @@ interface GameCanvasProps {
 
 // Canvas scaling (pixels per meter)
 const SCALE = 400;
-const CANVAS_WIDTH = TABLE.WIDTH * SCALE;
-const CANVAS_HEIGHT = TABLE.HEIGHT * SCALE;
+const TABLE_PIXEL_WIDTH = TABLE.WIDTH * SCALE;
+const TABLE_PIXEL_HEIGHT = TABLE.HEIGHT * SCALE;
+const STAGE_PADDING = 140;
+const CANVAS_WIDTH = TABLE_PIXEL_WIDTH + STAGE_PADDING * 2;
+const CANVAS_HEIGHT = TABLE_PIXEL_HEIGHT + STAGE_PADDING * 2;
 
 // Convert table coordinates to canvas pixels
 function toCanvas(x: number, y: number): [number, number] {
-    return [x * SCALE, y * SCALE];
+    return [x * SCALE + STAGE_PADDING, y * SCALE + STAGE_PADDING];
 }
 
 // Convert canvas pixels to table coordinates
 function toTable(canvasX: number, canvasY: number): [number, number] {
-    return [canvasX / SCALE, canvasY / SCALE];
+    return [(canvasX - STAGE_PADDING) / SCALE, (canvasY - STAGE_PADDING) / SCALE];
+}
+
+function isWithinTable(x: number, y: number): boolean {
+    return x >= 0 && x <= TABLE.WIDTH && y >= 0 && y <= TABLE.HEIGHT;
 }
 
 export function GameCanvas({
@@ -70,7 +77,8 @@ export function GameCanvas({
     previousBalls,
     collisionEvents = [],
 }: GameCanvasProps) {
-    const canvasRef = useRef<HTMLCanvasElement>(null);
+    const tableCanvasRef = useRef<HTMLCanvasElement>(null);
+    const overlayCanvasRef = useRef<HTMLCanvasElement>(null);
     const pocketAnimRef = useRef<Map<string, { startTime: number; pocketIdx: number }>>(new Map());
     const impactFlashRef = useRef<Array<{ x: number; y: number; startTime: number; speed: number }>>([]);
     const feltPatternRef = useRef<CanvasPattern | null>(null);
@@ -113,7 +121,7 @@ export function GameCanvas({
 
     // Get canvas position from mouse or touch event
     const getTablePosFromXY = useCallback((clientX: number, clientY: number) => {
-        const canvas = canvasRef.current;
+        const canvas = overlayCanvasRef.current;
         if (!canvas) return null;
         const rect = canvas.getBoundingClientRect();
         const scaleX = canvas.width / rect.width;
@@ -144,7 +152,9 @@ export function GameCanvas({
             }
         }
 
-        if (onCanvasClick) onCanvasClick(pos[0], pos[1]);
+        if (onCanvasClick && isWithinTable(pos[0], pos[1])) {
+            onCanvasClick(pos[0], pos[1]);
+        }
     }, [getTablePos, onCanvasClick, callingPocket, onPocketClick]);
 
     const handleMouseMove = useCallback((e: React.MouseEvent<HTMLCanvasElement>) => {
@@ -175,7 +185,9 @@ export function GameCanvas({
             }
         }
 
-        if (onCanvasClick) onCanvasClick(pos[0], pos[1]);
+        if (onCanvasClick && isWithinTable(pos[0], pos[1])) {
+            onCanvasClick(pos[0], pos[1]);
+        }
     }, [getTablePosFromXY, onCanvasClick, callingPocket, onPocketClick]);
 
     const handleTouchMove = useCallback((e: React.TouchEvent<HTMLCanvasElement>) => {
@@ -191,23 +203,46 @@ export function GameCanvas({
     }, [onCanvasRelease]);
 
     const drawTable = useCallback((ctx: CanvasRenderingContext2D) => {
-        // Clear canvas
-        ctx.fillStyle = '#1a1a25';
+        const tableLeft = STAGE_PADDING;
+        const tableTop = STAGE_PADDING;
+
+        // Stage background (mobile tabletop style)
+        const stageGradient = ctx.createLinearGradient(0, 0, 0, CANVAS_HEIGHT);
+        stageGradient.addColorStop(0, '#eeeeee');
+        stageGradient.addColorStop(1, '#d7d7d7');
+        ctx.fillStyle = stageGradient;
         ctx.fillRect(0, 0, CANVAS_WIDTH, CANVAS_HEIGHT);
+
+        // Table drop shadow to separate from background
+        ctx.save();
+        ctx.fillStyle = 'rgba(0, 0, 0, 0.2)';
+        ctx.filter = 'blur(8px)';
+        ctx.fillRect(tableLeft + 10, tableTop + 12, TABLE_PIXEL_WIDTH, TABLE_PIXEL_HEIGHT);
+        ctx.restore();
 
         // Draw outer rail
         ctx.fillStyle = '#4a2c17';
-        ctx.fillRect(0, 0, CANVAS_WIDTH, CANVAS_HEIGHT);
+        ctx.fillRect(tableLeft, tableTop, TABLE_PIXEL_WIDTH, TABLE_PIXEL_HEIGHT);
 
         // Draw inner rail (cushion area)
         const cushionPx = TABLE.CUSHION * SCALE * 0.7;
         ctx.fillStyle = '#3d2412';
-        ctx.fillRect(cushionPx, cushionPx, CANVAS_WIDTH - cushionPx * 2, CANVAS_HEIGHT - cushionPx * 2);
+        ctx.fillRect(
+            tableLeft + cushionPx,
+            tableTop + cushionPx,
+            TABLE_PIXEL_WIDTH - cushionPx * 2,
+            TABLE_PIXEL_HEIGHT - cushionPx * 2
+        );
 
         // Draw felt (playable area)
         const railPx = TABLE.CUSHION * SCALE;
         ctx.fillStyle = '#0d6b3f';
-        ctx.fillRect(railPx, railPx, CANVAS_WIDTH - railPx * 2, CANVAS_HEIGHT - railPx * 2);
+        ctx.fillRect(
+            tableLeft + railPx,
+            tableTop + railPx,
+            TABLE_PIXEL_WIDTH - railPx * 2,
+            TABLE_PIXEL_HEIGHT - railPx * 2
+        );
 
         // Draw felt cloth texture (noise pattern)
         if (!feltPatternRef.current) {
@@ -228,7 +263,12 @@ export function GameCanvas({
         }
         if (feltPatternRef.current) {
             ctx.fillStyle = feltPatternRef.current;
-            ctx.fillRect(railPx, railPx, CANVAS_WIDTH - railPx * 2, CANVAS_HEIGHT - railPx * 2);
+            ctx.fillRect(
+                tableLeft + railPx,
+                tableTop + railPx,
+                TABLE_PIXEL_WIDTH - railPx * 2,
+                TABLE_PIXEL_HEIGHT - railPx * 2
+            );
         }
 
         // Draw pockets
@@ -265,8 +305,8 @@ export function GameCanvas({
         ctx.lineWidth = 1;
         ctx.beginPath();
         const [headX] = toCanvas(TABLE.HEAD_STRING_X, 0);
-        ctx.moveTo(headX, railPx);
-        ctx.lineTo(headX, CANVAS_HEIGHT - railPx);
+        ctx.moveTo(headX, tableTop + railPx);
+        ctx.lineTo(headX, tableTop + TABLE_PIXEL_HEIGHT - railPx);
         ctx.stroke();
         ctx.setLineDash([]);
 
@@ -291,17 +331,17 @@ export function GameCanvas({
         };
         // Long rails (top and bottom): 8 diamonds between corner pockets
         const longRailY_top = TABLE.CUSHION * SCALE * 0.35;
-        const longRailY_bot = CANVAS_HEIGHT - TABLE.CUSHION * SCALE * 0.35;
+        const longRailY_bot = TABLE_PIXEL_HEIGHT - TABLE.CUSHION * SCALE * 0.35;
         for (let i = 1; i <= 8; i++) {
-            const x = (TABLE.CUSHION + (TABLE.WIDTH - 2 * TABLE.CUSHION) * i / 9) * SCALE;
-            drawDiamond(x, longRailY_top);
-            drawDiamond(x, longRailY_bot);
+            const x = tableLeft + (TABLE.CUSHION + (TABLE.WIDTH - 2 * TABLE.CUSHION) * i / 9) * SCALE;
+            drawDiamond(x, tableTop + longRailY_top);
+            drawDiamond(x, tableTop + longRailY_bot);
         }
         // Short rails (left and right): 4 diamonds between corner pockets
-        const shortRailX_left = TABLE.CUSHION * SCALE * 0.35;
-        const shortRailX_right = CANVAS_WIDTH - TABLE.CUSHION * SCALE * 0.35;
+        const shortRailX_left = tableLeft + TABLE.CUSHION * SCALE * 0.35;
+        const shortRailX_right = tableLeft + TABLE_PIXEL_WIDTH - TABLE.CUSHION * SCALE * 0.35;
         for (let i = 1; i <= 4; i++) {
-            const y = (TABLE.CUSHION + (TABLE.HEIGHT - 2 * TABLE.CUSHION) * i / 5) * SCALE;
+            const y = tableTop + (TABLE.CUSHION + (TABLE.HEIGHT - 2 * TABLE.CUSHION) * i / 5) * SCALE;
             drawDiamond(shortRailX_left, y);
             drawDiamond(shortRailX_right, y);
         }
@@ -636,30 +676,43 @@ export function GameCanvas({
         impactFlashRef.current = toKeep;
     }, []);
 
-    const draw = useCallback(() => {
-        const canvas = canvasRef.current;
+    const drawTableScene = useCallback(() => {
+        const canvas = tableCanvasRef.current;
         if (!canvas) return;
 
         const ctx = canvas.getContext('2d');
         if (!ctx) return;
 
-        // Draw table
         drawTable(ctx);
 
-        // Draw balls
         for (const ball of tableState.balls) {
             drawBall(ctx, ball);
         }
 
-        // Draw pocket animations (shrinking/fading)
         drawPocketAnimations(ctx);
-
-        // Draw impact flashes
         drawImpactFlashes(ctx);
+    }, [tableState, drawTable, drawBall, drawPocketAnimations, drawImpactFlashes]);
 
-        // Draw aim line and cue if aiming
+    const drawOverlayScene = useCallback(() => {
+        const canvas = overlayCanvasRef.current;
+        if (!canvas) return;
+
+        const ctx = canvas.getContext('2d');
+        if (!ctx) return;
+
+        ctx.clearRect(0, 0, CANVAS_WIDTH, CANVAS_HEIGHT);
         drawAimLine(ctx);
-    }, [tableState, drawTable, drawBall, drawPocketAnimations, drawImpactFlashes, drawAimLine]);
+    }, [drawAimLine]);
+
+    const draw = useCallback(() => {
+        drawTableScene();
+        drawOverlayScene();
+    }, [drawTableScene, drawOverlayScene]);
+
+    const containerStyle: CSSProperties = {
+        ['--canvas-w' as string]: String(CANVAS_WIDTH),
+        ['--canvas-h' as string]: String(CANVAS_HEIGHT),
+    };
 
     useEffect(() => {
         let animFrame: number;
@@ -681,10 +734,19 @@ export function GameCanvas({
     }, [draw]);
 
     return (
-        <div className="game-canvas-container">
+        <div
+            className="game-canvas-container"
+            style={containerStyle}
+        >
             <canvas
-                ref={canvasRef}
-                className="game-canvas"
+                ref={tableCanvasRef}
+                className="game-canvas game-canvas-table"
+                width={CANVAS_WIDTH}
+                height={CANVAS_HEIGHT}
+            />
+            <canvas
+                ref={overlayCanvasRef}
+                className="game-canvas game-canvas-overlay"
                 width={CANVAS_WIDTH}
                 height={CANVAS_HEIGHT}
                 onMouseDown={handleMouseDown}
