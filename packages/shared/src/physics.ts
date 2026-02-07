@@ -244,6 +244,8 @@ export function simulateShot(
 
             const pocketResult = handlePocketGravity(ball);
             if (pocketResult >= 0) {
+                const pocketSpeed = vec2Length(ball.vel);
+
                 // Ball pocketed
                 ball.inPlay = false;
                 ball.vel = vec2(0, 0);
@@ -254,7 +256,7 @@ export function simulateShot(
                 pendingEvents.push({
                     type: 'ball_pocket',
                     ballId: ball.id,
-                    speed: vec2Length(ball.vel),
+                    speed: pocketSpeed,
                     pos: { x: POCKETS[pocketResult].x, y: POCKETS[pocketResult].y },
                 });
 
@@ -390,12 +392,22 @@ function resolveBallBallCollision(b1: SimBall, b2: SimBall): void {
  * Real tables have no cushion where pockets are — there's a gap.
  */
 function isInPocketZone(ball: SimBall, cushion: 'left' | 'right' | 'top' | 'bottom'): boolean {
-    const mouthR = PHYSICS.POCKET_MOUTH_RADIUS;
+    const mouthR = PHYSICS.POCKET_MOUTH_RADIUS + TABLE.BALL_RADIUS * 0.6;
     const c = TABLE.CUSHION;
 
     for (const pocket of POCKETS) {
-        const dist = vec2Distance(ball.pos, pocket);
+        const toPocket = vec2Sub(pocket, ball.pos);
+        const dist = vec2Length(toPocket);
         if (dist > mouthR) continue;
+
+        // Only open the jaw lane when the ball is inside the mouth
+        // or moving clearly toward the pocket.
+        const towardSpeed = dist > 0
+            ? vec2Dot(ball.vel, vec2Scale(toPocket, 1 / dist))
+            : 0;
+        if (dist > PHYSICS.POCKET_MOUTH_RADIUS && towardSpeed <= 0.02) {
+            continue;
+        }
 
         // Check if this pocket is on the specified cushion wall
         switch (cushion) {
@@ -475,26 +487,54 @@ function applySideSpinOnCushion(ball: SimBall, axis: 'x' | 'y'): void {
  */
 function handlePocketGravity(ball: SimBall): number {
     const dt = PHYSICS.TIME_STEP;
+    let nearestPocket = -1;
+    let nearestDist = Infinity;
 
     for (let i = 0; i < POCKETS.length; i++) {
-        const pocket = POCKETS[i];
-        const dx = pocket.x - ball.pos.x;
-        const dy = pocket.y - ball.pos.y;
-        const dist = Math.sqrt(dx * dx + dy * dy);
-
-        // Commit radius — ball is pocketed
-        if (dist < PHYSICS.POCKET_COMMIT_RADIUS) {
-            return i;
+        const dist = vec2Distance(ball.pos, POCKETS[i]);
+        if (dist < nearestDist) {
+            nearestDist = dist;
+            nearestPocket = i;
         }
+    }
 
-        // Mouth radius — apply gravity pull toward pocket center
-        if (dist < PHYSICS.POCKET_MOUTH_RADIUS) {
-            // Pull strength increases as ball gets closer to center
-            const normalizedDist = dist / PHYSICS.POCKET_MOUTH_RADIUS;
-            const pullStrength = PHYSICS.POCKET_PULL_STRENGTH * (1 - normalizedDist);
-            const pullDir = { x: dx / dist, y: dy / dist };
-            ball.vel = vec2Add(ball.vel, vec2Scale(pullDir, pullStrength * dt));
-        }
+    if (nearestPocket < 0 || nearestDist > PHYSICS.POCKET_MOUTH_RADIUS) {
+        return -1;
+    }
+
+    const pocket = POCKETS[nearestPocket];
+    const toPocket = vec2Sub(pocket, ball.pos);
+    const dist = vec2Length(toPocket);
+    if (dist <= 0.00001) {
+        return nearestPocket;
+    }
+
+    const inward = vec2Scale(toPocket, 1 / dist);
+    const tangent = { x: -inward.y, y: inward.x };
+    const radialSpeed = vec2Dot(ball.vel, inward);
+    const tangentialSpeed = vec2Dot(ball.vel, tangent);
+    const mouthProgress = 1 - dist / PHYSICS.POCKET_MOUTH_RADIUS;
+
+    // Core inward pull increases as the ball gets deeper in the jaws.
+    const pullStrength = PHYSICS.POCKET_PULL_STRENGTH * (0.35 + mouthProgress * mouthProgress * 1.4);
+    ball.vel = vec2Add(ball.vel, vec2Scale(inward, pullStrength * dt));
+
+    // Dampen sideways jaw rattle to favor smooth pocket entry.
+    const tangentialDamping = PHYSICS.POCKET_TANGENTIAL_DAMPING * mouthProgress;
+    ball.vel = vec2Sub(ball.vel, vec2Scale(tangent, tangentialSpeed * tangentialDamping));
+
+    // Prevent outward bounce once the ball is inside the pocket mouth.
+    if (radialSpeed < 0) {
+        ball.vel = vec2Add(ball.vel, vec2Scale(inward, -radialSpeed * (0.45 + mouthProgress)));
+    }
+
+    if (dist < PHYSICS.POCKET_COMMIT_RADIUS) {
+        return nearestPocket;
+    }
+
+    const postRadialSpeed = vec2Dot(ball.vel, inward);
+    if (dist < PHYSICS.POCKET_COMMIT_RADIUS + PHYSICS.POCKET_CAPTURE_BAND && postRadialSpeed > 0.1) {
+        return nearestPocket;
     }
 
     return -1;

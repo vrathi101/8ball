@@ -65,9 +65,11 @@ export const PHYSICS = {
     POWER_EXPONENT: 1.3,          // Non-linear power curve for fine control at low end
 
     // Pocket gravity well
-    POCKET_MOUTH_RADIUS: 0.06,    // Outer zone — ball gets pulled toward pocket center (~2.1 ball diameters)
-    POCKET_COMMIT_RADIUS: 0.038,  // Inner zone — ball is definitely pocketed
-    POCKET_PULL_STRENGTH: 5.0,    // m/s² gravitational pull toward pocket center
+    POCKET_MOUTH_RADIUS: 0.072,   // Outer pocket funnel where jaws start pulling the ball in
+    POCKET_COMMIT_RADIUS: 0.046,  // Inner throat radius where the ball is committed
+    POCKET_CAPTURE_BAND: 0.012,   // Additional inward-moving capture tolerance near the throat
+    POCKET_PULL_STRENGTH: 14.0,   // m/s² pull strength toward pocket center
+    POCKET_TANGENTIAL_DAMPING: 0.35, // Sideways velocity damping near pocket jaws
 
     // Simulation limits
     MAX_FRAMES: 30000,            // Safety limit (~2 min at 240fps)
